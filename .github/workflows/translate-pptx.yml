@@ -129,6 +129,10 @@ jobs:
           python scripts/audit_pptx_jp_count.py output_en.pptx || true
 
       - name: Upload to Google Drive (translation folder)
+        env:
+          # If provided, upload directly into this folder ID (supports shared drives)
+          FOLDER_ID: ${{ inputs.drive_input_folder_id }}
+          UPLOAD_FOLDER_ID: ${{ inputs.drive_input_folder_id }}
         run: |
           python scripts/upload_to_drive.py
 
