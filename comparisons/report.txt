@@ -1,0 +1,57 @@
+Total unique JP strings: 834
+Strings with differing translations across runs: 483
+Run 1: jp_chars_before=13276 jp_chars_after=1151 api_calls=21
+Run 2: jp_chars_before=13276 jp_chars_after=1160 api_calls=21
+Run 3: jp_chars_before=13276 jp_chars_after=3117 api_calls=21
+
+Sample differences (up to 10):
+SRC: メール広告
+  Run 1: Email advertising
+  Run 2: Email Advertising
+  Run 3: Email Advertising
+SRC: キャンペーンによる
+  Run 1: Campaign-based
+  Run 2: By campaign
+  Run 3: Campaign-based
+SRC: 本申込
+  Run 1: Formal application
+  Run 2: Formal Application
+  Run 3: 本申込
+SRC: マジセミ倶楽部は、繰り返しウェビナーを開催する中でPDCAを回し、より良いウェビナーを創っていく会員制のサービスです。入会には審査があります。
+  Run 1: Majisemi Club is a membership service that continuously holds webinars, implementing the PDCA cycle to create better webinars. Admission is subject to screening.
+  Run 2: Majisemi Club is a membership service that conducts repeated webinars to improve them through the PDCA cycle. Admission is subject to screening.
+  Run 3: Majisemi Club is a membership service that improves webinars by running the PDCA cycle through repeated webinars. Admission is subject to review.
+SRC: テクマトリックス株式会社
+  Run 1: TechMatrix Corporation
+  Run 2: TechMatrix Corporation
+  Run 3: Techmatrix Corporation
+SRC: 　　・セミナー（ウェビナー）
+  Run 1: ・Seminars (webinars)
+  Run 2: 　　・Seminars (webinars)
+  Run 3: ・Seminars (Webinars)
+SRC: －
+  Run 1: -
+  Run 2: -
+  Run 3: －
+SRC: 基本料金
+  Run 1: Basic fee
+  Run 2: Basic fee
+  Run 3: Base fee
+SRC: または
+フィールドセールス
+  Run 1: or
+field sales
+  Run 2: Or
+field sales
+  Run 3: or
+field sales
+SRC: 8割が2年以内に
+  Run 1: 80% contract with
+  Run 2: 80% sign contracts with
+  Run 3: 80% within 2 years
+
+Strengths:
+- None observed
+Weaknesses:
+- Some variability across runs; glossary or temperature tuning may improve consistency
+- Residual Japanese detected on some slides; consider expanding extraction or caching

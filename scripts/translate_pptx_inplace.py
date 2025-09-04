@@ -164,18 +164,50 @@ def _chat_create(client, model: str, sys_prompt: str, user_payload: dict, temper
     )
     return resp.choices[0].message.content.strip()
 
+def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
+    if style_file and os.path.exists(style_file):
+        try:
+            with open(style_file, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+
+    preset = (style_preset or "").strip().lower()
+    if preset in {"gengo", "gengo-ja-en", "gengo_ja_en"}:
+        return (
+            "Follow these JP→EN style rules (Gengo-inspired):\n"
+            "- Tone: Natural, clear business English; avoid overly literal phrasing.\n"
+            "- Honorifics: Omit honorifics unless required for meaning.\n"
+            "- Formatting: Preserve line breaks and bullet structure. Do not add new bullets.\n"
+            "- Punctuation: Use ASCII punctuation; convert full-width to half-width.\n"
+            "- Capitalization: Sentence case for sentences; Title Case for slide/section titles.\n"
+            "- Numerals: Keep numbers, percentages (%), units (e.g., GB), and URLs as-is.\n"
+            "- Dates: Use target-locale English (e.g., January 5, 2025) where explicit.\n"
+            "- Proper nouns: Keep brand/product capitalization; do not translate names.\n"
+            "- Acronyms: Expand on first use if unclear, then use acronym.\n"
+            "- Currency: Do not convert values; if symbol ambiguous, append ISO code (e.g., JPY).\n"
+            "- Register: Prefer active voice; concise and persuasive B2B tone.\n"
+            "- No additions: Do not summarize, omit, or invent content."
+        )
+    return ""
+
 def batch_translate(client, model: str, items, glossary):
     """Translate list of strings JA->EN. Returns list of translations in order.
     Uses Responses API for gpt-5 models; falls back to Chat Completions otherwise.
     Expects a strict JSON array output.
     """
+    # Compose system prompt with optional style guide
+    style_guide = build_style_guide_text(
+        os.getenv("STYLE_PRESET", ""), os.getenv("STYLE_GUIDE_FILE")
+    )
     sys_prompt = (
         "You are a professional Japanese-to-English translator for B2B marketing decks. "
         "Translate faithfully and naturally; keep the meaning and tone persuasive yet neutral. "
         "Do NOT summarize or add content. Preserve line breaks. "
         "Keep numbers, URLs, and variable-like tokens intact. "
         "Use sentence case for sentences; Title Case for slide titles where appropriate. "
-        "Respect the glossary exactly when terms occur."
+        "Respect the glossary exactly when terms occur. "
+        + ("\n" + style_guide if style_guide else "")
     )
 
     user_payload = {
@@ -188,13 +220,18 @@ def batch_translate(client, model: str, items, glossary):
     }
 
     use_responses = _use_responses_api(model)
+    # Allow temperature override
+    try:
+        temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
+    except Exception:
+        temperature = 0.2
 
     for attempt in range(3):
         try:
             if use_responses:
-                content = _responses_create(client, model, sys_prompt, user_payload, 0.2)
+                content = _responses_create(client, model, sys_prompt, user_payload, temperature)
             else:
-                content = _chat_create(client, model, sys_prompt, user_payload, 0.2)
+                content = _chat_create(client, model, sys_prompt, user_payload, temperature)
         except Exception as e:
             # Backoff and retry on transient errors
             time.sleep(1 + attempt)
