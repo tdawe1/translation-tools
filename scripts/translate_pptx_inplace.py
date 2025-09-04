@@ -117,8 +117,48 @@ def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set = None):
                 paras.append((sf, idx, text))
     return paras, slide_files
 
+def _use_responses_api(model: str) -> bool:
+    m = (model or "").lower()
+    # Prefer Responses API for latest models like gpt-5 family
+    return m.startswith("gpt-5") or os.getenv("OPENAI_USE_RESPONSES") == "1"
+
+def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
+    # OpenAI Responses API
+    try:
+        resp = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=temperature,
+        )
+        # New SDKs expose output_text; fall back if absent
+        content = getattr(resp, "output_text", None)
+        if not content:
+            # Fallback to choices/message style if present
+            if getattr(resp, "choices", None):
+                content = resp.choices[0].message.content
+        return content.strip() if content else ""
+    except Exception:
+        raise
+
+def _chat_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ],
+        temperature=temperature,
+    )
+    return resp.choices[0].message.content.strip()
+
 def batch_translate(client, model: str, items, glossary):
-    """Translate list of strings JA->EN. Returns list of translations in order. Uses strict JSON array output."""
+    """Translate list of strings JA->EN. Returns list of translations in order.
+    Uses Responses API for gpt-5 models; falls back to Chat Completions otherwise.
+    Expects a strict JSON array output.
+    """
     sys_prompt = (
         "You are a professional Japanese-to-English translator for B2B marketing decks. "
         "Translate faithfully and naturally; keep the meaning and tone persuasive yet neutral. "
@@ -137,23 +177,27 @@ def batch_translate(client, model: str, items, glossary):
         ],
     }
 
+    use_responses = _use_responses_api(model)
+
     for attempt in range(3):
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            temperature=0.2,
-        )
-        content = resp.choices[0].message.content.strip()
+        try:
+            if use_responses:
+                content = _responses_create(client, model, sys_prompt, user_payload, 0.2)
+            else:
+                content = _chat_create(client, model, sys_prompt, user_payload, 0.2)
+        except Exception as e:
+            # Backoff and retry on transient errors
+            time.sleep(1 + attempt)
+            continue
+
         try:
             data = json.loads(content)
             if isinstance(data, list) and len(data) == len(items):
                 return [str(x) for x in data]
         except Exception:
-            pass
-        time.sleep(1 + attempt)
+            # Not valid JSON array; retry
+            time.sleep(1 + attempt)
+            continue
 
     return items
 
