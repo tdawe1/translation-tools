@@ -1,0 +1,145 @@
+name: Translate PPTX (JA→EN) and Upload to Drive
+
+on:
+  workflow_dispatch:
+    inputs:
+      drive_input_folder_id:
+        description: "Drive folder ID to pull the newest .pptx (optional)"
+        required: false
+        type: string
+      file_name_regex:
+        description: "Regex to match .pptx when pulling from Drive"
+        default: ".*\.pptx$"
+        required: false
+        type: string
+      repo_file_path:
+        description: "Path to a .pptx in repo if not using Drive"
+        required: false
+        default: ""
+        type: string
+      model:
+        description: "OpenAI model"
+        default: "gpt-4o"
+        required: true
+        type: string
+      batch:
+        description: "Batch size for API calls"
+        default: "40"
+        required: true
+        type: string
+      slide_range:
+        description: "Optional: slide range to translate, e.g. 1-6"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+      GDRIVE_FOLDER_NAME: translation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai google-api-python-client google-auth google-auth-httplib2
+
+      - name: Determine input source
+        id: src
+        run: |
+          if [ -n "${{ inputs.drive_input_folder_id }}" ]; then
+            echo "source=drive" >> $GITHUB_OUTPUT
+          elif [ -n "${{ inputs.repo_file_path }}" ]; then
+            echo "source=repo" >> $GITHUB_OUTPUT
+          else
+            echo "No source provided. Provide drive_input_folder_id or repo_file_path." >&2
+            exit 1
+          fi
+
+      - name: Download newest PPTX from Drive
+        if: steps.src.outputs.source == 'drive'
+        env:
+          FOLDER_ID: ${{ inputs.drive_input_folder_id }}
+          FILE_NAME_REGEX: ${{ inputs.file_name_regex }}
+        run: |
+          python - <<'PY'
+          import os, io, json, re, sys
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+          sa=os.environ["GDRIVE_SA_JSON"]
+          creds=(
+              service_account.Credentials.from_service_account_info(json.loads(sa))
+              if sa.strip().startswith("{ ")
+              else service_account.Credentials.from_service_account_file(sa)
+          )
+          svc=build("drive","v3",credentials=creds)
+          folder_id=os.environ["FOLDER_ID"]
+          regex=re.compile(os.environ.get("FILE_NAME_REGEX", r".*\\.pptx$"))
+          q=f"'{folder_id}' in parents and mimeType!='application/vnd.google-apps.folder' and trashed=false"
+          res=svc.files().list(q=q, orderBy="modifiedTime desc", fields="files(id,name,mimeType,modifiedTime)").execute()
+          files=res.get("files",[])
+          target=None
+          for f in files:
+            if regex.match(f["name"]):
+              target=f; break
+          if not target:
+            print("No matching PPTX found in Drive folder.", file=sys.stderr); sys.exit(1)
+          request=svc.files().get_media(fileId=target["id"])
+          fh=io.FileIO("input.pptx","wb")
+          downloader=MediaIoBaseDownload(fh, request)
+          done=False
+          while not done:
+            status, done=downloader.next_chunk()
+          print("Downloaded:", target["name"])
+          PY
+
+      - name: Use repo PPTX
+        if: steps.src.outputs.source == 'repo'
+        run: |
+          test -f "${{ inputs.repo_file_path }}" || (echo "Missing ${{ inputs.repo_file_path }}" >&2; exit 1)
+          cp -v "${{ inputs.repo_file_path }}" "input.pptx"
+
+      - name: Translate PPTX (JA→EN)
+        run: |
+          python scripts/translate_pptx_inplace.py \
+            --in input.pptx \
+            --out output_en.pptx \
+            --glossary glossary.json \
+            --model "${{ inputs.model }}" \
+            --batch "${{ inputs.batch }}" \
+            ${{ inputs.slide_range && format('--slides {0}', inputs.slide_range) || '' }}
+
+      - name: Audit (JP char count)
+        run: |
+          python scripts/audit_pptx_jp_count.py output_en.pptx || true
+
+      - name: Upload to Google Drive (translation folder)
+        run: |
+          python scripts/upload_to_drive.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: translated-pptx-and-artifacts
+          path: |
+            output_en.pptx
+            bilingual.csv
+            translation_cache.json
+            audit.json
+            glossary.json
+            scripts/translate_pptx_inplace.py
+            scripts/audit_pptx_jp_count.py
+            scripts/upload_to_drive.py
