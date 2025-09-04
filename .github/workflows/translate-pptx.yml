@@ -80,14 +80,16 @@ jobs:
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaIoBaseDownload
           sa=os.environ["GDRIVE_SA_JSON"]
-          creds=(
-              service_account.Credentials.from_service_account_info(json.loads(sa))
-              if sa.strip().startswith("{ ")
-              else service_account.Credentials.from_service_account_file(sa)
-          )
+          if sa.strip().startswith("{"):
+              print("Attempting to parse GDRIVE_SA_JSON as JSON content.")
+              creds = service_account.Credentials.from_service_account_info(json.loads(sa))
+          else:
+              print("Attempting to parse GDRIVE_SA_JSON as a file path.")
+              creds = service_account.Credentials.from_service_account_file(sa)
+          
           svc=build("drive","v3",credentials=creds)
           folder_id=os.environ["FOLDER_ID"]
-          regex=re.compile(os.environ.get("FILE_NAME_REGEX", r".*\.pptx$"))
+          regex=re.compile(os.environ.get("FILE_NAME_REGEX", r'.*\.pptx$'))
           q=f"'{folder_id}' in parents and mimeType!='application/vnd.google-apps.folder' and trashed=false"
           res=svc.files().list(q=q, orderBy="modifiedTime desc", fields="files(id,name,mimeType,modifiedTime)").execute()
           files=res.get("files",[])
