@@ -23,6 +23,11 @@ on:
         default: "gpt-5"
         required: true
         type: string
+      temperature:
+        description: "Generation temperature (0.0–1.0)"
+        default: "0.0"
+        required: false
+        type: string
       batch:
         description: "Batch size for API calls"
         default: "40"
@@ -123,7 +128,7 @@ jobs:
       - name: Translate PPTX (JA→EN)
         env:
           STYLE_PRESET: gengo-ja-en
-          OPENAI_TEMPERATURE: "0.0"
+          OPENAI_TEMPERATURE: ${{ inputs.temperature }}
         run: |
           python scripts/translate_pptx_inplace.py \
             --in input.pptx \
