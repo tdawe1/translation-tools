@@ -42,6 +42,10 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
       GDRIVE_FOLDER_NAME: translation
+      # Optional: OAuth user credentials to upload using user quota
+      GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.DRIVE_OAUTH_CLIENT_ID }}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.DRIVE_OAUTH_CLIENT_SECRET }}
+      GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.DRIVE_OAUTH_REFRESH_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

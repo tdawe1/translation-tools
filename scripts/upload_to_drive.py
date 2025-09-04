@@ -1,13 +1,35 @@
 #!/usr/bin/env python3
 # Uploads output_en.pptx + supporting files to Google Drive:/translation (creates if missing).
 import os, io, json, sys, mimetypes
-from google.oauth2 import service_account
+from google.oauth2 import service_account, credentials as oauth_credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 FOLDER_NAME = os.environ.get("GDRIVE_FOLDER_NAME", "translation")
 
 def build_service():
+    """Build a Drive service using either OAuth user creds (if provided) or Service Account."""
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+    refresh_token = os.environ.get("GOOGLE_OAUTH_REFRESH_TOKEN")
+
+    if client_id and client_secret and refresh_token:
+        # Use user's OAuth credentials (uploads count against the user quota)
+        scopes = [
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/drive.file",
+        ]
+        creds = oauth_credentials.Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=scopes,
+        )
+        return build("drive", "v3", credentials=creds)
+
+    # Fallback to service account
     sa_json = os.environ["GDRIVE_SA_JSON"]
     try:
         creds = service_account.Credentials.from_service_account_info(json.loads(sa_json))

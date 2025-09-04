@@ -1,0 +1,22 @@
+{
+  "unique_strings": 40,
+  "api_calls": 1,
+  "jp_chars_before": 764,
+  "jp_chars_after": 59,
+  "per_slide_before": {
+    "ppt/slides/slide1.xml": 118,
+    "ppt/slides/slide2.xml": 98,
+    "ppt/slides/slide3.xml": 5,
+    "ppt/slides/slide4.xml": 154,
+    "ppt/slides/slide5.xml": 194,
+    "ppt/slides/slide6.xml": 195
+  },
+  "per_slide_after": {
+    "ppt/slides/slide1.xml": 0,
+    "ppt/slides/slide2.xml": 0,
+    "ppt/slides/slide3.xml": 0,
+    "ppt/slides/slide4.xml": 14,
+    "ppt/slides/slide5.xml": 31,
+    "ppt/slides/slide6.xml": 14
+  }
+}
