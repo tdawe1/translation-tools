@@ -7,6 +7,7 @@ on:
         description: "Drive folder ID to pull the newest .pptx (optional)"
         required: false
         type: string
+        default: '1TpzGw7MEewhiZMZ7qYJUQlOwT5M7OxZL'
       file_name_regex:
         description: "Regex to match .pptx when pulling from Drive"
         default: '.*\.pptx$'
@@ -19,7 +20,7 @@ on:
         type: string
       model:
         description: "OpenAI model"
-        default: "gpt-4o"
+        default: "gpt-5"
         required: true
         type: string
       batch:
@@ -40,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
       GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
       GDRIVE_FOLDER_NAME: translation
       # Optional: OAuth user credentials to upload using user quota

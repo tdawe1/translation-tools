@@ -165,7 +165,7 @@ def main():
     ap.add_argument("--bilingual_csv", default="bilingual.csv", help="Output bilingual CSV")
     ap.add_argument("--audit_json", default="audit.json", help="Audit report JSON")
     ap.add_argument("--glossary", default=None, help="Optional glossary JSON {JA: EN}")
-    ap.add_argument("--model", default=os.getenv("OPENAI_MODEL", "gpt-4o"))
+    ap.add_argument("--model", default=os.getenv("OPENAI_MODEL", "gpt-5"))
     ap.add_argument("--batch", type=int, default=40, help="Batch size for API calls")
     ap.add_argument("--slides", default=None, help="Slide range, e.g., '1-6'")
     args = ap.parse_args()
@@ -182,7 +182,11 @@ def main():
         print("ERROR: Set OPENAI_API_KEY in environment.", file=sys.stderr)
         sys.exit(2)
 
-    client = OpenAI(api_key=api_key)
+    base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    if base_url:
+        client = OpenAI(api_key=api_key, base_url=base_url)
+    else:
+        client = OpenAI(api_key=api_key)
 
     glossary = {}
     if args.glossary and os.path.exists(args.glossary):
