@@ -130,11 +130,12 @@ def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, t
         resp = client.responses.create(
             model=model,
             input=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                {"role": "system", "content": [{"type": "output_text", "text": sys_prompt}]},
+                {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]},
             ],
             reasoning={"effort": effort},
             temperature=temperature,
+            response_format={"type": "json"},
         )
         # New SDKs expose output_text; fall back if absent
         content = getattr(resp, "output_text", None)
@@ -142,6 +143,12 @@ def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, t
             # Fallback to choices/message style if present
             if getattr(resp, "choices", None):
                 content = resp.choices[0].message.content
+        if not content and getattr(resp, "output", None):
+            try:
+                # Attempt to read the first text content
+                content = resp.output[0].content[0].text
+            except Exception:
+                content = None
         return content.strip() if content else ""
     except Exception:
         raise
@@ -250,7 +257,8 @@ def main():
 
     src_strings = [t for _, _, t in paras if JP_ANY.search(t)]
     uniq = list(dict.fromkeys(src_strings))
-    missing = [s for s in uniq if s not in cache]
+    # Treat identity-mapped entries as missing to avoid caching failures where source == target
+    missing = [s for s in uniq if s not in cache or cache.get(s) == s]
 
     i = 0
     calls = 0
