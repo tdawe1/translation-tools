@@ -125,12 +125,15 @@ def _use_responses_api(model: str) -> bool:
 def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
     # OpenAI Responses API
     try:
+        # Support "high thinking" baseline via reasoning.effort
+        effort = os.getenv("OPENAI_REASONING_EFFORT", "high")
         resp = client.responses.create(
             model=model,
             input=[
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
             ],
+            reasoning={"effort": effort},
             temperature=temperature,
         )
         # New SDKs expose output_text; fall back if absent
