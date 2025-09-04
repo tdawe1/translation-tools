@@ -9,7 +9,7 @@ on:
         type: string
       file_name_regex:
         description: "Regex to match .pptx when pulling from Drive"
-        default: ".*\.pptx$"
+        default: '.*\.pptx$'
         required: false
         type: string
       repo_file_path:
@@ -87,7 +87,7 @@ jobs:
           )
           svc=build("drive","v3",credentials=creds)
           folder_id=os.environ["FOLDER_ID"]
-          regex=re.compile(os.environ.get("FILE_NAME_REGEX", r".*\\.pptx$"))
+          regex=re.compile(os.environ.get("FILE_NAME_REGEX", r".*\.pptx$"))
           q=f"'{folder_id}' in parents and mimeType!='application/vnd.google-apps.folder' and trashed=false"
           res=svc.files().list(q=q, orderBy="modifiedTime desc", fields="files(id,name,mimeType,modifiedTime)").execute()
           files=res.get("files",[])
