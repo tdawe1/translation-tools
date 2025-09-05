@@ -1,6 +1,16 @@
 import re
 
-JP_TO_EN = str.maketrans({"、": ", ", "。": ". ", "「": '"', "」": '"', "／": "/", "　": " "})
+JP_TO_EN = str.maketrans({
+    "\u3001": ", ",   # 、 comma
+    "\u3002": ". ",   # 。 period
+    "\u300C": '"',    # 「 open quote
+    "\u300D": '"',    # 」 close quote
+    "\uFF0F": "/",    # ／ full-width solidus
+    "\u3000": " ",    # 　full-width space
+    "\u30FB": "•",    # ・ middle dot → bullet (use sparingly)
+    "\uFF1A": ":",    # ： full-width colon
+    "\uFF1B": ";",    # ； full-width semicolon
+})
 
 def normalize_punct(s: str) -> str:
     s = (s or "").translate(JP_TO_EN)
