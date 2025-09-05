@@ -367,7 +367,7 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Apply title case fixes
     for violation in style_issues.get("title_case_violations", []):
-        if "index" not in violation:
+        if not isinstance(violation, dict) or "index" not in violation:
             continue
         index = violation["index"]
         if 0 <= index < len(fixed) and fixed[index] is not None:
@@ -375,7 +375,7 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Fix bullet punctuation
     for violation in style_issues.get("bullet_terminal_punctuation", []):
-        if "index" not in violation:
+        if not isinstance(violation, dict) or "index" not in violation:
             continue
         index = violation["index"] 
         if 0 <= index < len(fixed) and fixed[index] is not None:
@@ -383,7 +383,7 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Replace banned phrases
     for violation in style_issues.get("banned_phrases", []):
-        if "index" not in violation or "phrase" not in violation or "suggested" not in violation:
+        if not isinstance(violation, dict) or "index" not in violation or "phrase" not in violation or "suggested" not in violation:
             continue
         index = violation["index"]
         if 0 <= index < len(fixed) and fixed[index] is not None:
@@ -398,7 +398,7 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Fix punctuation errors
     for violation in style_issues.get("punctuation_errors", []):
-        if "index" not in violation or "original" not in violation or "correct" not in violation:
+        if not isinstance(violation, dict) or "index" not in violation or "original" not in violation or "correct" not in violation:
             continue
         index = violation["index"]
         if 0 <= index < len(fixed) and fixed[index] is not None:
@@ -408,7 +408,7 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Glossary fixes (simple token replacement)
     for violation in style_issues.get("glossary_violations", []):
-        if "index" not in violation or "found" not in violation or "expected" not in violation:
+        if not isinstance(violation, dict) or "index" not in violation or "found" not in violation or "expected" not in violation:
             continue
         index = violation["index"]
         if 0 <= index < len(fixed) and fixed[index] is not None:
