@@ -425,7 +425,7 @@ def model_style_check(client, translations: List[str],
     Returns:
         Structured style diagnostics
     """
-    prompt = create_style_checker_prompt(glossary, deck_tone)
+    prompt = create_style_checker_prompt_v2(glossary, deck_tone)
     
     # Add translations to prompt
     numbered_translations = []
