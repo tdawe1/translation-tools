@@ -20,7 +20,7 @@ from xml.etree import ElementTree as ET
 
 # Import style consistency modules
 try:
-    from style_normalize import normalize_block, get_style_guide, apply_style_guide_to_prompt, detect_content_type
+    from style_normalize import normalize_block, get_style_guide, apply_style_guide_to_prompt, detect_content_type as detect_content_type_from_text
     from style_checker import model_style_check, apply_style_fixes, run_style_check
     from pptx_format import apply_deck_formatting_profile
     STYLE_MODULES_AVAILABLE = True
@@ -666,7 +666,7 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
     normalized_translations = []
     for translation in translations:
         # Detect content type for appropriate normalization
-        content_type = detect_content_type(translation)
+        content_type = detect_content_type_from_text(translation)
         normalized = normalize_block(translation, content_type)
         normalized_translations.append(normalized)
     
