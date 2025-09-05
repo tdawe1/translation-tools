@@ -78,7 +78,8 @@ def encoding_for_model_key(model_key: str):
 
 JP_RX = re.compile(r"[぀-ヿ㐀-鿿々〆ヵヶ]")
 BR_RX = re.compile(r"
-||
+|
+|
 ")
 
 def extract_text_blocks(pptx_path: str):
@@ -107,13 +108,14 @@ def extract_text_blocks(pptx_path: str):
 {2,}", s) if p.strip()]
                 blocks.extend(parts)
     return [b for b in blocks if b.strip()]
-
 def count_tokens_for_blocks(blocks, model_key: str):
     enc = encoding_for_model_key(model_key)
-    toks = 0; chars = 0
+    toks = 0
+    jp_chars = 0
     for b in blocks:
-        toks  += len(enc.encode(b))
-        chars += len(b)
+        toks += len(enc.encode(b))
+        jp_chars += sum(1 for _ in JP_RX.finditer(b))
+    return toks, jp_chars
     return toks, chars
 
 def compute_requests(n_blocks: int, batch_size: int) -> int:
