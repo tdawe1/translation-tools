@@ -28,6 +28,28 @@ def create_style_checker_prompt(translations: List[str], glossary: Dict[str, str
     
     style_guide = get_style_guide()
     
+    from typing import List, Dict, Any, Optional
+
+def create_style_checker_prompt(glossary: Optional[Dict[str, str]] = None, deck_tone: Optional[Dict[str, Any]] = None) -> str:
+    """Create prompt for style checking with JSON diagnostics output."""
+    
+    glossary_section = ""
+    if glossary:
+        glossary_items = [f'"{jp}" → "{en}"' for jp, en in list(glossary.items())[:10]]
+        glossary_section = f"""
+**Key glossary terms:**
+{'; '.join(glossary_items)}
+"""
+
+    deck_tone_section = ""
+    if deck_tone:
+        deck_tone_section = f"""
+**Deck Tone Profile (for tie-breaking ambiguous cases):**
+{json.dumps(deck_tone, ensure_ascii=False, indent=2)}
+"""
+    
+    style_guide = get_style_guide()
+    
     return f"""You are a style reviewer for marketing slide translations. Review the provided English translations and return ONLY a JSON object with style diagnostics.
 
 {style_guide}
@@ -53,11 +75,11 @@ def create_style_checker_prompt(translations: List[str], glossary: Dict[str, str
     "punctuation_errors": []
   }},
   "tone_flags": {{
-    "added_hype": ["industry-leading","cutting-edge"],
-    "softened_claims": ["replaced 'will' with 'can'"],
-    "over_formalized": true,
+    "added_hype": [],
+    "softened_claims": [],
+    "over_formalized": false,
     "over_casual": false,
-    "deviation_from_deck_profile": ["persuasiveness +2", "directness -1"]
+    "deviation_from_deck_profile": []
   }}
 }}
 ```
@@ -284,7 +306,9 @@ def check_tone_drift(client, translations: List[str], deck_tone: Dict[str, Any])
         print(f"Error calling OpenAI API for tone drift check: {e}", file=sys.stderr)
         return {}
 
-def run_style_check(client, translations: List[str], glossary: Dict[str, str] = None, deck_tone: Dict[str, Any] = None) -> Dict[str, Any]:
+def run_style_check(client, translations: List[str],
+                    glossary: Optional[Dict[str, str]] = None,
+                    deck_tone: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Run comprehensive style check and return JSON diagnostics.
     
@@ -377,7 +401,9 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     return fixed
 
 # Model-based checking (integration with OpenAI)
-def model_style_check(client, translations: List[str], glossary: Dict[str, str] = None, deck_tone: Dict[str, Any] = None) -> Dict[str, Any]:
+def model_style_check(client, translations: List[str],
+                      glossary: Optional[Dict[str, str]] = None,
+                      deck_tone: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Use model to perform style checking and return JSON diagnostics.
     
@@ -390,7 +416,7 @@ def model_style_check(client, translations: List[str], glossary: Dict[str, str] 
     Returns:
         Structured style diagnostics
     """
-    prompt = create_style_checker_prompt(translations, glossary, deck_tone)
+    prompt = create_style_checker_prompt(glossary, deck_tone)
     
     # Add translations to prompt
     numbered_translations = []

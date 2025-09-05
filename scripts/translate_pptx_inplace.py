@@ -66,7 +66,10 @@ def mask_fragile(s):
         nonlocal i
         def repl(m):
             nonlocal i
-            k = f"⟦{{tag}}_{{i}}⟧"; maps[k] = m.group(0); i += 1; return k
+            k = f"⟦{tag}_{i}⟧"
+            maps[k] = m.group(0)
+            i += 1
+            return k
         return rx.sub(repl, s)
     s = do(RX_URL,"URL",s); s = do(RX_NUM,"NUM",s); s = do(RX_CODE,"CODE",s)
     return s, maps
@@ -98,7 +101,9 @@ def normalize_para_text(p_el):
 
 def set_para_text(p_el, new_text: str):
     """Word-aware replacement. Preserves word boundaries and turns '\n' into <a:br/>."""
-    t_tag = A_NS + "t"; r_tag = A_NS + "r"; br_tag = A_NS + "br"
+    t_tag = A_NS + "t"
+    r_tag = A_NS + "r"
+    br_tag = A_NS + "br"
     import re
 
     # Collect runs (preserve overall styling distribution), clear <a:br/> and run text
@@ -150,12 +155,14 @@ def set_para_text(p_el, new_text: str):
     acc = 0
     for L in orig_lens:
         share = round(total_words * (L / total_base))
-        targets.append(share); acc += share
+        targets.append(share)
+        acc += share
     if targets:
         targets[-1] += (total_words - acc)  # fix rounding drift
 
     def consume(n_chars):
-        taken, count = [], 0
+        taken = []
+        count = 0
         while tokens:
             tok = tokens[0]
             if tok is None:  # stop before newline; caller will insert <a:br/>

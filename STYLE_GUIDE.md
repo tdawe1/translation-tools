@@ -17,9 +17,14 @@
 - Use ASCII punctuation in the final text; collapse duplicate spaces.
 
 ## Slide Structure
-- **Titles:** concise headline (≤ 10–12 words). Use Title Case if your template requires; otherwise mirror source capitalization.
-- **Bullets:** use **fragments**, not full sentences. Capitalize first word. **No period at end** unless multiple sentences are truly needed.
-- **Parallelism:** sibling bullets keep the same grammatical form.
+- **Dates:** Month Day, Year (e.g., **August 1, 2013**).
+- **Numbers:** use **thousands separators** for numbers (e.g., 3,000). Preserve numerals/percents exactly.
+
+### Structure
+
+- **Titles:** concise headline (≤ 10–12 words). Prefer Title Case for slide/section titles; if a client template mandates otherwise, mirror the template.
+- **Bullets:** fragments, not full sentences. Capitalize the first word. No full stops unless a bullet contains multiple sentences.
+- **Parallelism:** ensure sibling bullets share the same grammatical form (e.g., all start with a verb, or all are noun phrases).
 
 ## Terminology & Numbers
 - Enforce the **glossary** exactly (case-sensitive). Do not translate product/brand names; keep source casing.
