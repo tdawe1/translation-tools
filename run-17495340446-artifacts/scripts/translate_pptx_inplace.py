@@ -32,7 +32,7 @@ FULLWIDTH = r'\uff00-\uffef'
 JP_ANY = re.compile(f'[{JP_CORE}{CJK_PUNCT}{FULLWIDTH}]')
 
 # Masking patterns for fragile content
-RX_NUM = re.compile(r"\d[\d,.\-–%]*")
+RX_NUM = re.compile(r"\d[\d,.\-\u2013%]*")
 RX_URL = re.compile(r"https?://\S+|www\.\S+")
 RX_CODE= re.compile(r"[A-Z]{2,}\d[\w\-]*")
 
@@ -79,12 +79,11 @@ def normalize_para_text(p_el):
     return "".join(parts)
 
 def set_para_text(p_el, new_text: str):
-    """Word-aware replacement that preserves line breaks as <a:br/> and avoids mid-word splits."""
-    t_tag = A_NS + "t"
-    r_tag = A_NS + "r"
-    br_tag = A_NS + "br"
+    """Word-aware replacement. Preserves word boundaries and turns '\n' into <a:br/>."""
+    t_tag = A_NS + "t"; r_tag = A_NS + "r"; br_tag = A_NS + "br"
+    import re
 
-    # Get existing runs (to preserve basic styling distribution if present)
+    # Collect runs (preserve overall styling distribution), clear <a:br/> and run text
     runs = [child for child in p_el if child.tag == r_tag]
     if not runs:
         r = ET.Element(r_tag)
@@ -92,7 +91,6 @@ def set_para_text(p_el, new_text: str):
         p_el.insert(0, r)
         runs = [r]
 
-    # Clear all run text and remove existing <a:br/>
     for child in list(p_el):
         if child.tag == br_tag:
             p_el.remove(child)
@@ -100,85 +98,77 @@ def set_para_text(p_el, new_text: str):
         t = r.find(t_tag) or ET.SubElement(r, t_tag)
         t.text = ""
 
-    # Split translated text into "lines" (we'll re-insert <a:br/> nodes)
-    lines = new_text.split("\n")
-
-    # Tokenize by words but keep whitespace separators so we can reassemble cleanly
-    import re
-    def tokenize(s):
-        return re.findall(r'\S+|\s+', s)
-
+    # Tokenize: keep whitespace; use None sentinel for newline
+    def tokenize(s): return re.findall(r"\S+|\s+", s)
     tokens = []
-    for li, line in enumerate(lines):
+    lines = new_text.split("\n")
+    for i, line in enumerate(lines):
         tokens.extend(tokenize(line))
-        if li < len(lines) - 1:
-            tokens.append(None)  # sentinel = newline -> <a:br/>
+        if i < len(lines) - 1:
+            tokens.append(None)  # newline marker
 
-    # If only one run, dump everything into it and create <a:br/> between parts
+    # Single run: dump text, insert <a:br/> at markers
     if len(runs) == 1:
         t = runs[0].find(t_tag)
         buf = []
+        br_count = 0
         for tok in tokens:
             if tok is None:
-                # insert <a:br/>
-                runs[0].addnext(ET.Element(br_tag))
+                # Insert <a:br/> after the run
+                br = ET.Element(br_tag)
+                run_idx = list(p_el).index(runs[0])
+                p_el.insert(run_idx + 1 + br_count, br)
+                br_count += 1
             else:
                 buf.append(tok)
         t.text = "".join(buf).strip()
         return
 
-    # Otherwise distribute approximately by original run text length, but only at word boundaries
-    orig_lens = []
-    for r in runs:
-        tt = r.find(t_tag)
-        orig_lens.append(len(tt.text or ""))
-
-    total = sum(orig_lens) or len("".join(t for t in tokens if t))
+    # Multi-run: distribute on word boundaries proportional to original text lengths
+    orig_lens = [len((r.find(t_tag).text or "")) for r in runs]
+    total_words = sum(len(x) for x in tokens if isinstance(x, str))
+    total_base = sum(orig_lens) or total_words or 1
     targets = []
     acc = 0
     for L in orig_lens:
-        share = round(total * (L / total)) if total else 0
-        targets.append(share)
-        acc += share
-    # fix rounding drift
-    if acc != total and targets:
-        targets[-1] += (total - acc)
+        share = round(total_words * (L / total_base))
+        targets.append(share); acc += share
+    if targets:
+        targets[-1] += (total_words - acc)  # fix rounding drift
 
-    # pack tokens into each run without splitting words
     def consume(n_chars):
-        taken = []
-        count = 0
+        taken, count = [], 0
         while tokens:
             tok = tokens[0]
-            if tok is None:  # newline => break out and let caller insert <a:br/>
+            if tok is None:  # stop before newline; caller will insert <a:br/>
                 break
             need = len(tok)
-            if count + need > n_chars and not tok.isspace() and count > 0:
+            # respect word boundaries
+            if count > 0 and not tok.isspace() and count + need > n_chars:
                 break
             taken.append(tokens.pop(0))
             count += need
-            if tokens and taken and taken[-1] is not None and tokens[0] is None:
-                # leave newline to outer loop
+            if tokens and tokens[0] is None:
                 break
         return "".join(taken)
 
-    # fill runs
-    for idx, r in enumerate(runs):
+    # Fill each run, inserting <a:br/> exactly where newlines occur
+    for r, n in zip(runs, targets):
         t = r.find(t_tag)
-        # keep pulling tokens; if a newline is next, consume it and insert <a:br/>
-        chunk = consume(targets[idx])
-        t.text = chunk
+        t.text = consume(n)
         while tokens and tokens[0] is None:
             tokens.pop(0)
-            r.addnext(ET.Element(br_tag))
+            br = ET.Element(br_tag)
+            run_idx = list(p_el).index(r)
+            p_el.insert(run_idx + 1, br)
 
-    # any leftovers go into the last run
+    # Any leftovers go into the last run
     if tokens:
-        last = runs[-1].find(t_tag)
-        rest = "".join(tok for tok in tokens if tok is not None)
-        last.text = (last.text or "") + rest
+        tail = "".join(tok for tok in tokens if isinstance(tok, str))
+        last_t = runs[-1].find(t_tag)
+        last_t.text = (last_t.text or "") + tail
 
-def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set = None):
+def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set | None = None):
     """Return a flat list of (slide_name, paragraph_index, text)."""
     paras = []
     slide_files = sorted([n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")])
@@ -258,24 +248,22 @@ def _chat_create(client, model: str, sys_prompt: str, user_payload: dict, temper
 def _extract_json_array(s: str, expected_len: int):
     import json, re
     s = re.sub(r"^```(?:json)?|```$", "", s.strip(), flags=re.M)
-    m = re.search(r"\[\s*(?:\"|{|\d)", s, flags=re.S)
-    if m:
-        start = m.start()
-        # naive bracket matching for the first top-level array
-        depth = 0
-        for i, ch in enumerate(s[start:], start):
-            if ch == "[": depth += 1
-            elif ch == "]":
-                depth -= 1
-                if depth == 0:
-                    frag = s[start:i+1]
-                    try:
-                        arr = json.loads(frag)
-                        if isinstance(arr, list) and (expected_len == 0 or len(arr) == expected_len):
-                            return arr
-                    except Exception:
-                        pass
-                    break
+    dec = json.JSONDecoder()
+    in_str = esc = False; i = 0; n = len(s)
+    while i < n:
+        ch = s[i]
+        if esc: esc = False
+        elif ch == '\\' and in_str: esc = True
+        elif ch == '"': in_str = not in_str
+        elif not in_str and ch == '[':
+            try:
+                obj, end = dec.raw_decode(s, i)
+            except json.JSONDecodeError:
+                i += 1; continue
+            if isinstance(obj, list) and (expected_len == 0 or len(obj) >= expected_len):
+                return obj[:expected_len] if expected_len else obj
+            i = end; continue
+        i += 1
     return None
 
 def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
@@ -350,7 +338,7 @@ def batch_translate(client, model: str, items, glossary):
                 content = _responses_create(client, model, sys_prompt, user_payload, temperature)
             else:
                 content = _chat_create(client, model, sys_prompt, user_payload, temperature)
-        except Exception as e:
+        except Exception:
             # Backoff and retry on transient errors
             time.sleep(1 + attempt)
             continue
