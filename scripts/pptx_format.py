@@ -98,9 +98,9 @@ def _apply_bullet_indentation(pPr, level, is_title=False):
     hanging_indent = 182880  # ~0.2 inch hanging indent
     
     if level == 0:
-        # First level bullets
-        pPr.set("marL", "0")
-        pPr.set("indent", str(hanging_indent))
+        # First level bullets — hanging indent
+        pPr.set("marL", str(hanging_indent))
+        pPr.set("indent", f"-{hanging_indent}")
     elif level == 1:
         # Second level bullets  
         left_margin = base_indent
@@ -159,7 +159,7 @@ def apply_deck_formatting_profile(root):
         # Apply formatting to the text body within the shape
         txBody = shape.find(".//" + A_NS + "txBody")
         if txBody is not None:
-            apply_textframe_profile_xml(shape, is_title=is_title)
+            apply_textframe_profile_xml(txBody, is_title=is_title)
 
 def get_formatting_statistics(root) -> dict:
     """
@@ -176,43 +176,56 @@ def get_formatting_statistics(root) -> dict:
         "line_spacings": []
     }
     
-    for txBody in root.iter(A_NS + "txBody"):
-        stats["text_frames"] += 1
+    for shape in root.iter(P_NS + "sp"):
+        is_title = False
+        nvSpPr = shape.find(".//" + P_NS + "nvSpPr")
+        if nvSpPr is not None:
+            nvPr = nvSpPr.find(P_NS + "nvPr")
+            if nvPr is not None:
+                ph = nvPr.find(P_NS + "ph")
+                if ph is not None and ph.get("type") in ["title", "ctrTitle"]:
+                    is_title = True
+        for txBody in shape.iter(A_NS + "txBody"):
+            stats["text_frames"] += 1
+            if is_title:
+                stats["title_frames"] += 1
+            else:
+                stats["body_frames"] += 1
         
-        # Check body properties
-        bodyPr = txBody.find(A_NS + "bodyPr")
-        if bodyPr is not None:
-            margins = {
-                "left": bodyPr.get("lIns", "default"),
-                "right": bodyPr.get("rIns", "default"), 
-                "top": bodyPr.get("tIns", "default"),
-                "bottom": bodyPr.get("bIns", "default")
-            }
-            stats["margin_settings"].append(margins)
-        
-        # Check paragraph properties
-        for para in txBody.iter(A_NS + "p"):
-            pPr = para.find(A_NS + "pPr")
-            if pPr is not None:
-                lnSpc = pPr.find(A_NS + "lnSpc")
-                if lnSpc is not None:
-                    spcPct = lnSpc.find(A_NS + "spcPct")
-                    if spcPct is not None:
-                        stats["line_spacings"].append(spcPct.get("val", "default"))
+            # Check body properties
+            bodyPr = txBody.find(A_NS + "bodyPr")
+            if bodyPr is not None:
+                margins = {
+                    "left": bodyPr.get("lIns", "default"),
+                    "right": bodyPr.get("rIns", "default"), 
+                    "top": bodyPr.get("tIns", "default"),
+                    "bottom": bodyPr.get("bIns", "default")
+                }
+                stats["margin_settings"].append(margins)
             
-            # Check run properties
-            for run in para.iter(A_NS + "r"):
-                rPr = run.find(A_NS + "rPr")
-                if rPr is not None:
-                    size = rPr.get("sz")
-                    if size:
-                        stats["font_sizes"].append(int(size))
-                    
-                    latin = rPr.find(A_NS + "latin")
-                    if latin is not None:
-                        font_family = latin.get("typeface")
-                        if font_family:
-                            stats["font_families"].add(font_family)
+            # Check paragraph properties
+            for para in txBody.iter(A_NS + "p"):
+                pPr = para.find(A_NS + "pPr")
+                if pPr is not None:
+                    lnSpc = pPr.find(A_NS + "lnSpc")
+                    if lnSpc is not None:
+                        spcPct = lnSpc.find(A_NS + "spcPct")
+                        if spcPct is not None:
+                            stats["line_spacings"].append(spcPct.get("val", "default"))
+                
+                # Check run properties
+                for run in para.iter(A_NS + "r"):
+                    rPr = run.find(A_NS + "rPr")
+                    if rPr is not None:
+                        size = rPr.get("sz")
+                        if size:
+                            stats["font_sizes"].append(int(size))
+                        
+                        latin = rPr.find(A_NS + "latin")
+                        if latin is not None:
+                            font_family = latin.get("typeface")
+                            if font_family:
+                                stats["font_families"].add(font_family)
     
     return stats
 

@@ -60,11 +60,7 @@ PRICING = {
     "cohere:command-light":  {"in": 0.30, "out": 0.60,  "tokenizer": "o200k_base"},
 }
 
-# tiktoken model/encoding map
-ENCODING_FOR = {
-    # Use o200k_base as a robust modern default when a model alias is unknown
-    "o200k_base": "o200k_base",
-}
+# (Optional) Reserved for future tokenizer alias mapping.
 
 try:
     import tiktoken
@@ -130,7 +126,16 @@ def estimate_output_tokens(total_jp_chars: int, expansion: float, avg_en_chars_p
 def load_pricing_overrides(path: str):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    PRICING.update(data)
+    for k, v in data.items():
+        base = {
+            "in": v.get("in"),
+            "in_cached": v.get("in_cached"),
+            "out": v.get("out"),
+            "cached_write": v.get("cached_write"),
+            "cached_read": v.get("cached_read"),
+            "tokenizer": v.get("tokenizer", "o200k_base"),
+        }
+        PRICING[k] = base
 
 def split_cached_openai(total_in_tokens: int, prefix_tokens: int, n_reqs: int, no_cache: bool):
     """OpenAI: discounted cached input after the first call."""
@@ -283,6 +288,8 @@ Deck: {os.path.basename(args.pptx)}")
     print(f"Reviewer: {args.reviewer:28} → {money(rev_cost)}  ({rev_parts})")
     print(f"TOTAL: {money(prod_cost + rev_cost)}
 ")
+    if args.anthropic_cache_write:
+        print("Note: Anthropic first-call prefix billed at 'cached_write' rate.")
 
     if args.also:
         print("=== Alternatives for Producer (same tokens/caching) ===")

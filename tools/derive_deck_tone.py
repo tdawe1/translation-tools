@@ -22,7 +22,17 @@ def extract_text_blocks(pptx_path: str):
             xml = z.read(name).decode("utf-8", errors="ignore")
             texts = re.findall(rf"<a:t>(.*?)</a:t>", xml, flags=re.S)
             if texts:
-                s = BR_RX.sub("\n",  ".join(t.replace("&lt;","<").replace("&gt;">").replace("&amp;",&) for t in texts))
+                s = "".join(t.replace("&lt;","<").replace("&gt;">",).replace("&amp;","&") for t in texts)
+                s = BR_RX.sub("\n", s)
+                parts = [p.strip() for p in re.split(r"\n{2,}", s) if p.strip()]
+                blocks.extend(parts)
+        note_names = sorted([n for n in z.namelist() if n.startswith("ppt/notesSlides/notesSlide") and n.endswith(".xml")])
+        for name in note_names:
+            xml = z.read(name).decode("utf-8", errors="ignore")
+            texts = re.findall(rf"<a:t>(.*?)</a:t>", xml, flags=re.S)
+            if texts:
+                s = "".join(t.replace("&lt;","<").replace("&gt;">",).replace("&amp;","&") for t in texts)
+                s = BR_RX.sub("\n", s)
                 parts = [p.strip() for p in re.split(r"\n{2,}", s) if p.strip()]
                 blocks.extend(parts)
     return [b for b in blocks if b.strip()]
@@ -52,7 +62,7 @@ def derive_tone_fingerprint(client, text_sample):
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
             messages=[
                 {"role": "system", "content": "You are a linguistic analyst specializing in Japanese business communication."},
                 {"role": "user", "content": prompt}
@@ -64,6 +74,7 @@ def derive_tone_fingerprint(client, text_sample):
     except Exception as e:
         print(f"Error calling OpenAI API: {e}", file=sys.stderr)
         return None
+
 
 def main():
     ap = argparse.ArgumentParser()
