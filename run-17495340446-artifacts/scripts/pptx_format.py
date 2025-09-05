@@ -143,44 +143,23 @@ def apply_deck_formatting_profile(root):
     Args:
         root: XML root element of slide
     """
-    # Track if we've found title elements
-    title_found = False
-    
-    # Look for title placeholders and apply title formatting
-    for shape in root.iter():
-        if shape.tag.endswith("}sp"):  # Shape element
-            # Check for title indicators in shape properties
-            nvSpPr = shape.find(".//" + P_NS + "nvSpPr")
-            if nvSpPr is not None:
-                nvPr = nvSpPr.find(P_NS + "nvPr")
-                if nvPr is not None:
-                    ph = nvPr.find(P_NS + "ph")
-                    if ph is not None and ph.get("type") in ["title", "ctrTitle"]:
-                        title_found = True
-                        # Apply title formatting to this text frame
-                        txBody = shape.find(".//" + A_NS + "txBody")
-                        if txBody is not None:
-                            apply_textframe_profile_xml(shape, is_title=True)
-    
-    # Apply body formatting to all other text frames
-    for txBody in root.iter(A_NS + "txBody"):
-        # Skip if we already processed this as a title
-        parent_shape = txBody
-        while parent_shape is not None and not parent_shape.tag.endswith("}sp"):
-            parent_shape = parent_shape.getparent() if hasattr(parent_shape, 'getparent') else None
-        
-        is_title_frame = False
-        if parent_shape is not None:
-            nvSpPr = parent_shape.find(".//" + P_NS + "nvSpPr")
-            if nvSpPr is not None:
-                nvPr = nvSpPr.find(P_NS + "nvPr") 
-                if nvPr is not None:
-                    ph = nvPr.find(P_NS + "ph")
-                    if ph is not None and ph.get("type") in ["title", "ctrTitle"]:
-                        is_title_frame = True
-        
-        if not is_title_frame:
-            apply_textframe_profile_xml(parent_shape or txBody.getparent(), is_title=False)
+    # To reliably find the parent shape of a text body, we must iterate through shapes, not all elements.
+    # This avoids the use of getparent(), which is not available in xml.etree.ElementTree.
+    for shape in root.iter(P_NS + "sp"):
+        is_title = False
+        # Check for title placeholders in shape properties
+        nvSpPr = shape.find(".//" + P_NS + "nvSpPr")
+        if nvSpPr is not None:
+            nvPr = nvSpPr.find(P_NS + "nvPr")
+            if nvPr is not None:
+                ph = nvPr.find(P_NS + "ph")
+                if ph is not None and ph.get("type") in ["title", "ctrTitle"]:
+                    is_title = True
+
+        # Apply formatting to the text body within the shape
+        txBody = shape.find(".//" + A_NS + "txBody")
+        if txBody is not None:
+            apply_textframe_profile_xml(shape, is_title=is_title)
 
 def get_formatting_statistics(root) -> dict:
     """
