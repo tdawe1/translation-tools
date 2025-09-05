@@ -19,9 +19,8 @@ Notes:
 Install:  pip install python-pptx tiktoken
 """
 
-import argparse, math, zipfile, re, sys, os, json
+import argparse, math, zipfile, re, sys, os, json, html
 from collections import defaultdict
-
 # -------------------------
 # Built-in pricing (USD per 1M tokens)
 # You can override or extend with --pricing pricing.json
@@ -77,27 +76,40 @@ def encoding_for_model_key(model_key: str):
         return tiktoken.get_encoding("o200k_base")
 
 JP_RX = re.compile(r"[぀-ヿ㐀-鿿々〆ヵヶ]")
-BR_RX = re.compile(r"
-|
-|
-")
-
+BR_RX = re.compile(r"(?:\r\n|\r|\n)")
 def extract_text_blocks(pptx_path: str):
     """Return a list of visible text blocks (titles, bullets, notes) from the PPTX."""
     A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
     blocks = []
     with zipfile.ZipFile(pptx_path, "r") as z:
-        slide_names = sorted([n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")])
+        slide_names = sorted(
+            n
+            for n in z.namelist()
+            if n.startswith("ppt/slides/slide") and n.endswith(".xml")
+        )
         for name in slide_names:
             xml = z.read(name).decode("utf-8", errors="ignore")
-            texts = re.findall(rf"<a:t>(.*?)</a:t>", xml, flags=re.S)
+            # Preserve explicit line breaks from PPTX
+            xml = re.sub(r"<a:br\s*/>", "\n", xml)
+            texts = re.findall(r"<a:t>(.*?)</a:t>", xml, flags=re.S)
             if texts:
-                s = BR_RX.sub("
-",  "".join(t.replace("&lt;","<").replace("&gt;",">").replace("&amp;","&") for t in texts))
-                parts = [p.strip() for p in re.split(r"
-{2,}", s) if p.strip()]
+                s = BR_RX.sub("\n", "".join(html.unescape(t) for t in texts))
+                parts = [p.strip() for p in re.split(r"\n{2,}", s) if p.strip()]
                 blocks.extend(parts)
-        note_names = sorted([n for n in z.namelist() if n.startswith("ppt/notesSlides/notesSlide") and n.endswith(".xml")])
+
+        note_names = sorted(
+            n
+            for n in z.namelist()
+            if n.startswith("ppt/notesSlides/notesSlide") and n.endswith(".xml")
+        )
+        for name in note_names:
+            xml = z.read(name).decode("utf-8", errors="ignore")
+            xml = re.sub(r"<a:br\s*/>", "\n", xml)
+            texts = re.findall(r"<a:t>(.*?)</a:t>", xml, flags=re.S)
+            if texts:
+                s = BR_RX.sub("\n", "".join(html.unescape(t) for t in texts))
+                parts = [p.strip() for p in re.split(r"\n{2,}", s) if p.strip()]
+                blocks.extend(parts)
         for name in note_names:
             xml = z.read(name).decode("utf-8", errors="ignore")
             texts = re.findall(rf"<a:t>(.*?)</a:t>", xml, flags=re.S)
@@ -116,8 +128,6 @@ def count_tokens_for_blocks(blocks, model_key: str):
         toks += len(enc.encode(b))
         jp_chars += sum(1 for _ in JP_RX.finditer(b))
     return toks, jp_chars
-    return toks, chars
-
 def compute_requests(n_blocks: int, batch_size: int) -> int:
     return max(1, math.ceil(n_blocks / max(1, batch_size)))
 
