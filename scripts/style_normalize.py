@@ -189,10 +189,11 @@ def get_style_guide() -> str:
     return """
 **STYLE GUIDE**
 
-**Voice & tone**
-• US English, marketing slide voice
-• Benefits > features; plain verbs; no hype  
-• Avoid: "utilize", "cutting-edge", "world-class", "leverage"
+**Tone & register:**
+• Infer and mirror the tone from the Japanese (formality, directness, persuasion level, technicality).
+• If the tone is ambiguous, default to neutral–professional.
+• Do **not** add hype or soften/strengthen claims. Don’t “improve” style beyond what’s needed for natural US English.
+• Preserve tags/placeholders exactly; keep bullet structure.
 
 **Structure**
 • Titles: Title Case, ≤ 10–12 words
