@@ -1,15 +1,15 @@
 import re
 
 JP_TO_EN = str.maketrans({
-    "\u3001": ", ",   # 、 comma
-    "\u3002": ". ",   # 。 period
-    "\u300C": '"',    # 「 open quote
-    "\u300D": '"',    # 」 close quote
-    "\uFF0F": "/",    # ／ full-width solidus
-    "\u3000": " ",    # 　full-width space
-    "\u30FB": "•",    # ・ middle dot → bullet (use sparingly)
-    "\uFF1A": ":",    # ： full-width colon
-    "\uFF1B": ";",    # ； full-width semicolon
+    "\u3001": ", ",         # IDEOGRAPHIC COMMA (U+3001)
+    "\u3002": ". ",         # IDEOGRAPHIC FULL STOP (U+3002)
+    "\u300C": '"',          # LEFT CORNER BRACKET (U+300C)
+    "\u300D": '"',          # RIGHT CORNER BRACKET (U+300D)
+    "\uFF0F": "/",          # FULLWIDTH SOLIDUS (U+FF0F)
+    "\u3000": " ",          # FULLWIDTH SPACE (U+3000)
+    "\u30FB": "\u2022",     # KATAKANA MIDDLE DOT (U+30FB) → BULLET (U+2022)
+    "\uFF1A": ":",          # FULLWIDTH COLON (U+FF1A)
+    "\uFF1B": ";",          # FULLWIDTH SEMICOLON (U+FF1B)
 })
 
 def normalize_punct(s: str) -> str:
