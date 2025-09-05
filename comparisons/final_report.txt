@@ -1,0 +1,14 @@
+Final v1 residual summary
+Total JP-like chars: 404
+Slides with residual: 13
+Top residual slides:
+  ppt/slides/slide6.xml 173
+  ppt/slides/slide5.xml 104
+  ppt/slides/slide8.xml 50
+  ppt/slides/slide33.xml 22
+  ppt/slides/slide4.xml 9
+  ppt/slides/slide19.xml 7
+  ppt/slides/slide21.xml 7
+  ppt/slides/slide22.xml 7
+  ppt/slides/slide23.xml 7
+  ppt/slides/slide34.xml 7

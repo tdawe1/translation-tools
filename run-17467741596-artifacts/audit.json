@@ -1,0 +1,16 @@
+{
+  "unique_strings": 25,
+  "api_calls": 1,
+  "jp_chars_before": 621,
+  "jp_chars_after": 0,
+  "per_slide_before": {
+    "ppt/slides/slide19.xml": 231,
+    "ppt/slides/slide20.xml": 213,
+    "ppt/slides/slide21.xml": 177
+  },
+  "per_slide_after": {
+    "ppt/slides/slide19.xml": 0,
+    "ppt/slides/slide20.xml": 0,
+    "ppt/slides/slide21.xml": 0
+  }
+}

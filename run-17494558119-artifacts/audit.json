@@ -1,0 +1,18 @@
+{
+  "unique_strings": 62,
+  "api_calls": 2,
+  "jp_chars_before": 833,
+  "jp_chars_after": 584,
+  "per_slide_before": {
+    "ppt/slides/slide5.xml": 194,
+    "ppt/slides/slide6.xml": 195,
+    "ppt/slides/slide7.xml": 13,
+    "ppt/slides/slide8.xml": 431
+  },
+  "per_slide_after": {
+    "ppt/slides/slide5.xml": 189,
+    "ppt/slides/slide6.xml": 190,
+    "ppt/slides/slide7.xml": 13,
+    "ppt/slides/slide8.xml": 192
+  }
+}
