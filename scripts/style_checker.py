@@ -122,7 +122,7 @@ def check_bullet_punctuation(translations: List[str]) -> List[Dict[str, Any]]:
     for i, text in enumerate(translations):
         if not text:
             continue
-        clean_text = re.sub(r'[[/?[^]]+]]', '', text).strip()
+        clean_text = re.sub(r'\[/?[^\]]+\]', '', text).strip()
         
         # Check if likely bullet content (not title, has bullet indicators, or is fragment-like)
         has_bullet_tags = '[li-' in text or '•' in text
@@ -153,7 +153,7 @@ def check_glossary_violations(translations: List[str], glossary: Dict[str, str])
     for i, text in enumerate(translations):
         if not text:
             continue
-        clean_text = re.sub(r'[[/?[^]]+]]', '', text).lower()
+        clean_text = re.sub(r'\[/?[^\]]+\]', '', text).lower()
         
         for jp_term, expected_en in glossary.items():
             expected_lower = expected_en.lower()
@@ -188,7 +188,7 @@ def check_banned_phrases(translations: List[str]) -> List[Dict[str, Any]]:
     for i, text in enumerate(translations):
         if not text:
             continue
-        clean_text = re.sub(r'[[/?[^]]+]]', '', text)
+        clean_text = re.sub(r'\[/?[^\]]+\]', '', text)
         
         for banned, suggested in BANNED_PHRASES.items():
             pattern = re.compile(r'\b' + re.escape(banned) + r'\b', re.IGNORECASE)
@@ -259,8 +259,8 @@ def analyze_parallelism(translations: List[str]) -> List[Dict[str, Any]]:
             texts = [text for _, text in group]
             
             # Simplified parallelism check: look for mixed verb forms
-            starts_with_gerund = sum(1 for t in texts if re.match(r'^\w+ing\b', re.sub(r'[[/?[^]]+]]', '', t)))
-            starts_with_verb = sum(1 for t in texts if re.match(r'^\w+\b', re.sub(r'[[/?[^]]+]]', '', t)))
+            starts_with_gerund = sum(1 for t in texts if re.match(r'^\w+ing\b', re.sub(r'\[/?[^\]]+\]', '', t)))
+            starts_with_verb = sum(1 for t in texts if re.match(r'^\w+\b', re.sub(r'\[/?[^\]]+\]', '', t)))
             
             if starts_with_gerund > 0 and starts_with_verb > 0 and starts_with_gerund != len(texts):
                 issues.append({
@@ -440,7 +440,6 @@ def model_style_check(client, translations: List[str],
             reasoning={"effort": "medium"},  # Balanced effort for style analysis
             text={"verbosity": "low"},
             input=[{"role": "user", "content": [{"type": "input_text", "text": full_prompt}]}],
-            response_format={"type": "json_object"},
             temperature=0.0  # Deterministic for consistent diagnostics
         )
         
