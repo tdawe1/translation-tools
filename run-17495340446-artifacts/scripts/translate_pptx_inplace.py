@@ -42,6 +42,9 @@ P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 # Global storage for notes content during processing
 _slide_notes_content = {}
 
+# Global storage for slides needing layout tightening
+_slides_need_tightening = set()
+
 def count_jp_chars(s: str) -> int:
     return len(JP_ANY.findall(s))
 
@@ -523,6 +526,113 @@ def add_notes_to_slide(zout: zipfile.ZipFile, slide_name: str, notes_content: li
         # If notes creation fails, continue without notes
         pass
 
+def apply_layout_tightening(root, is_aggressive: bool = False):
+    """Stage 3: Apply layout optimizations to buy space."""
+    import xml.etree.ElementTree as ET
+    
+    # Find all text bodies and apply tightening
+    for txBody in root.iter(A_NS + "txBody"):
+        # Ensure autofit is enabled (shrink-to-fit)
+        bodyPr = txBody.find(A_NS + "bodyPr")
+        if bodyPr is None:
+            bodyPr = ET.SubElement(txBody, A_NS + "bodyPr")
+        
+        # Set autofit with minimum font size guards
+        if bodyPr.find(A_NS + "normAutofit") is None and bodyPr.find(A_NS + "spAutoFit") is None:
+            normAutofit = ET.SubElement(bodyPr, A_NS + "normAutofit")
+            # Set font scale limits to prevent text from becoming unreadable
+            normAutofit.set("fontScale", "85000")  # Minimum 85% font scaling
+            normAutofit.set("lnSpcReduction", "15000")  # Maximum 15% line spacing reduction
+        
+        # Tighten margins
+        bodyPr.set("lIns", "36000")   # Left margin: 2pt (was default ~7pt)
+        bodyPr.set("rIns", "36000")   # Right margin: 2pt  
+        bodyPr.set("tIns", "18000")   # Top margin: 1pt (was default ~5pt)
+        bodyPr.set("bIns", "18000")   # Bottom margin: 1pt
+        bodyPr.set("wrap", "square")  # Ensure text wrapping
+        
+        # Apply paragraph-level optimizations
+        for p in txBody.iter(A_NS + "p"):
+            pPr = p.find(A_NS + "pPr")
+            if pPr is None:
+                pPr = ET.SubElement(p, A_NS + "pPr")
+            
+            # Tighten line spacing
+            lnSpc = pPr.find(A_NS + "lnSpc")
+            if lnSpc is None:
+                lnSpc = ET.SubElement(pPr, A_NS + "lnSpc")
+            spcPct = lnSpc.find(A_NS + "spcPct")
+            if spcPct is None:
+                spcPct = ET.SubElement(lnSpc, A_NS + "spcPct")
+            spcPct.set("val", "110000")  # 110% line spacing (was default ~120%)
+            
+            # Remove extra spacing before/after paragraphs
+            spcBef = pPr.find(A_NS + "spcBef")
+            if spcBef is not None:
+                pPr.remove(spcBef)
+            spcAft = pPr.find(A_NS + "spcAft")  
+            if spcAft is not None:
+                pPr.remove(spcAft)
+            
+            # Optimize bullet indents
+            lvl = int(pPr.get("lvl", "0"))
+            if lvl > 0:
+                # Tighten bullet indentation
+                if lvl == 1:
+                    pPr.set("marL", "228600")    # 0.32" left margin (was ~0.5")
+                    pPr.set("indent", "-228600") # Hanging indent to align text
+                elif lvl == 2:
+                    pPr.set("marL", "457200")    # 0.64" left margin
+                    pPr.set("indent", "-228600")
+                else:
+                    pPr.set("marL", str(228600 * (lvl + 1)))
+                    pPr.set("indent", "-228600")
+            
+            # Apply font size guards to prevent unreadable text
+            for r in p.iter(A_NS + "r"):
+                rPr = r.find(A_NS + "rPr")
+                if rPr is not None:
+                    # Check if font size is specified
+                    sz = rPr.get("sz")
+                    if sz:
+                        font_size = int(sz)
+                        # Determine if this is likely a title based on context or size
+                        is_title = font_size > 2800 or "title" in (p.get("class", "")).lower()
+                        
+                        # Set minimum font sizes
+                        min_size = 1800 if is_title else 1100  # 18pt for titles, 11pt for body
+                        if font_size < min_size:
+                            rPr.set("sz", str(min_size))
+
+def detect_content_type(para_element) -> str:
+    """Detect if paragraph is title, bullet, or table content."""
+    # Check parent elements and attributes for context
+    parent = para_element.getparent() if hasattr(para_element, 'getparent') else None
+    
+    # Look for title indicators in parent shape properties  
+    current = para_element
+    while current is not None:
+        if current.tag and "title" in current.tag.lower():
+            return "title"
+        if hasattr(current, 'getparent'):
+            current = current.getparent()
+        else:
+            break
+    
+    # Check for bullet/list indicators
+    pPr = para_element.find(A_NS + "pPr")
+    if pPr is not None:
+        if pPr.find(A_NS + "buChar") is not None or pPr.find(A_NS + "buAutoNum") is not None:
+            return "bullet"
+        if pPr.get("lvl") is not None and int(pPr.get("lvl", "0")) > 0:
+            return "bullet"
+    
+    # Check for table context (simplified detection)
+    if any("table" in str(elem.tag).lower() for elem in para_element.iter()):
+        return "table"
+    
+    return "bullet"  # Default assumption
+
 def batch_translate(client, model: str, items, glossary):
     """Translate list of strings JA->EN. Returns list of translations in order.
     Uses GPT-5 reasoning model with deep thinking for best fidelity.
@@ -606,16 +716,26 @@ def batch_translate(client, model: str, items, glossary):
                             if verify_content_integrity(original, stub_text, spilled_content, glossary or {}):
                                 processed_out.append(stub_text)
                                 notes_content.append(spilled_content)
+                                # Still might need tightening
+                                final_ratio = calculate_expansion_ratio(original, stub_text)
+                                if final_ratio > (threshold * 0.9):  # Still close to threshold
+                                    _slides_need_tightening.add(original)
                             else:
                                 # Integrity check failed, use condensed version without spill
                                 processed_out.append(condensed)
                                 notes_content.append("")
+                                # Definitely need tightening since spill failed
+                                _slides_need_tightening.add(original)
                         else:
-                            # Compression worked, no spill needed
+                            # Compression worked, check if still needs tightening
                             processed_out.append(condensed)
                             notes_content.append("")
+                            if new_ratio > (threshold * 0.85):  # Still somewhat long
+                                _slides_need_tightening.add(original)
                     else:
-                        # No intervention needed
+                        # Check if borderline case that could benefit from tightening
+                        if expansion_ratio > (threshold * 0.8):  # Within 20% of threshold
+                            _slides_need_tightening.add(original)
                         processed_out.append(translated)
                         notes_content.append("")
                 
@@ -655,13 +775,21 @@ def batch_translate(client, model: str, items, glossary):
                                 if verify_content_integrity(original, stub_text, spilled_content, glossary or {}):
                                     processed_out.append(stub_text)
                                     notes_content.append(spilled_content)
+                                    final_ratio = calculate_expansion_ratio(original, stub_text)
+                                    if final_ratio > (threshold * 0.9):
+                                        _slides_need_tightening.add(original)
                                 else:
                                     processed_out.append(condensed)
                                     notes_content.append("")
+                                    _slides_need_tightening.add(original)
                             else:
                                 processed_out.append(condensed)
                                 notes_content.append("")
+                                if new_ratio > (threshold * 0.85):
+                                    _slides_need_tightening.add(original)
                         else:
+                            if expansion_ratio > (threshold * 0.8):
+                                _slides_need_tightening.add(original)
                             processed_out.append(translated)
                             notes_content.append("")
                     
@@ -782,6 +910,10 @@ def main():
                             set_para_text(p, tgt)
                             changed = True
                 if changed:
+                    # Apply Stage 3: Layout tightening for slides marked as needing it
+                    if name in _slides_need_tightening:
+                        apply_layout_tightening(root)
+                    
                     _ensure_autofit(root)
                     data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
                     
