@@ -93,11 +93,11 @@ def check_title_case_violations(translations: List[str]) -> List[Dict[str, Any]]
     
     for i, text in enumerate(translations):
         # Heuristic: likely title if short and doesn't end with sentence punctuation
-        clean_text_for_check = re.sub(r'[[/?[^]]+]]', '', text)
+        clean_text_for_check = re.sub(r'\[/?[^\]]+\]', '', text)
         if len(clean_text_for_check.split()) <= 12 and not clean_text_for_check.strip().endswith(('.', ':', ';')):
             
             # Apply Title Case while preserving formatting tags
-            parts = re.split(r'([[/?[^]]+]])', text)
+            parts = re.split(r'(\[/?[^\]]+\])', text)
             corrected_parts = []
             for part in parts:
                 if part.startswith('[') and part.endswith(']'):
@@ -105,7 +105,6 @@ def check_title_case_violations(translations: List[str]) -> List[Dict[str, Any]]
                 else:
                     corrected_parts.append(title_case(part))
             corrected = "".join(corrected_parts)
-
             if text != corrected:
                 violations.append({
                     "index": i,
