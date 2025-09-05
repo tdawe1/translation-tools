@@ -37,6 +37,14 @@ except Exception:
     print("ERROR: The 'openai' package is required. Install via: pip install openai", file=sys.stderr)
     raise
 
+# ---- Webhook correlation ----
+# Stores response.id -> context for webhook progress tracking
+RESPONSE_INDEX = {}
+# Per-run identifier to group events
+CURRENT_RUN_ID = os.getenv("RUN_ID", f"run_{int(time.time())}")
+# Maps source text to slide/paragraph positions
+TEXT_CONTEXT_INDEX = {}
+
 # ---- Regex helpers ----
 JP_CORE = r'\u3040-\u309f\u30a0-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff'
 CJK_PUNCT = r'\u3000-\u303f'
@@ -228,40 +236,25 @@ def _use_responses_api(model: str) -> bool:
     # Prefer Responses API for latest models like gpt-5 family
     return m.startswith("gpt-5") or os.getenv("OPENAI_USE_RESPONSES") == "1"
 
-def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    # OpenAI Responses API with GPT-5 reasoning model
+def _responses_create_compat(client, *, model, sys_prompt, user_payload, temperature=0.6):
+    import json, logging
+    kwargs = {
+      "model": model,
+      "input": [
+        {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
+        {"role": "user",   "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]},
+      ],
+      "reasoning": {"effort": ( "minimal" if model.startswith("gpt-5-mini") else os.getenv("OPENAI_REASONING_EFFORT","high"))},
+      "temperature": temperature,
+      # DO NOT set response_format here; some SDKs/models reject it
+      "text": {"verbosity": "low"},
+    }
     try:
-        # Configure reasoning effort based on model - high for main translation, minimal for reviews
-        if model.startswith("gpt-5-mini"):
-            effort = "minimal"  # Fast reviewer
-        else:
-            effort = os.getenv("OPENAI_REASONING_EFFORT", "high")  # Deep thinking for translation
-        
-        resp = client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]}
-                {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
-            ],
-            reasoning={"effort": effort},
-            text={"verbosity": "low"},  # Concise responses, avoid chatty prose
-            temperature=temperature,
-            response_format={"type": "json"},
-        )
-        # New SDKs expose output_text; fall back if absent
-        content = getattr(resp, "output_text", None)
-        if not content:
-            # Fallback to choices/message style if present
-            if getattr(resp, "choices", None):
-                content = resp.choices[0].message.content
-        if not content and getattr(resp, "output", None):
-            try:
-                # Attempt to read the first text content
-                content = resp.output[0].content[0].text
-            except Exception:
-                content = None
-        return content.strip() if content else ""
-    except Exception:
+        return client.responses.create(**kwargs)
+    except TypeError as e:
+        if "response_format" in str(e) or "unexpected keyword" in str(e):
+            logging.warning("Responses API: retrying without response_format (already omitted).")
+            return client.responses.create(**kwargs)
         raise
 
 def _chat_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
@@ -404,9 +397,9 @@ Text to shorten:
                 reasoning_effort="high",
                 text={"verbosity": "low"}, 
                 input=[{"role": "user", "content": prompt}],
-                response_format={"type": "text"},
                 temperature=0.2,
             )
+            RESPONSE_INDEX[resp.id] = {"batch_id": CURRENT_RUN_ID, "stage": "condense"}
             content = getattr(resp, "output_text", None)
             if not content and getattr(resp, "output", None):
                 try:
@@ -771,7 +764,26 @@ def batch_translate(client, model: str, items, glossary):
     for attempt in range(3):
         try:
             if use_responses:
-                content = _responses_create(client, model, sys_prompt, user_payload, temperature)
+                resp = _responses_create_compat(client, model=model, sys_prompt=sys_prompt, user_payload=user_payload, temperature=temperature)
+                # Record response ID for webhook correlation
+                RESPONSE_INDEX[resp.id] = {
+                    "batch_id": CURRENT_RUN_ID,
+                    "items": [
+                        {
+                            "text": s,
+                            "contexts": TEXT_CONTEXT_INDEX.get(s, []),
+                        }
+                        for s in items
+                    ],
+                }
+                content = getattr(resp, "output_text", None)
+                if callable(content): content = content()
+                if not content and getattr(resp, "choices", None):
+                    content = resp.choices[0].message.content
+                if not content and getattr(resp, "output", None):
+                    try: content = resp.output[0].content[0].text
+                    except Exception: content = None
+                content = (content or "").strip()
             else:
                 content = _chat_create(client, model, sys_prompt, user_payload, temperature)
         except Exception:
@@ -835,7 +847,6 @@ def batch_translate(client, model: str, items, glossary):
                 
                 # Store notes content globally for PPTX write-back
                 # Map original text to notes content for lookup during processing
-                global _slide_notes_content
                 for original, notes in zip(items, notes_content):
                     if notes.strip():
                         _slide_notes_content[original] = notes
@@ -907,7 +918,6 @@ def batch_translate(client, model: str, items, glossary):
                             notes_content.append("")
                     
                     # Store notes content globally
-                    global _slide_notes_content
                     for original, notes in zip(items, notes_content):
                         if notes.strip():
                             _slide_notes_content[original] = notes
@@ -925,7 +935,7 @@ def batch_translate(client, model: str, items, glossary):
             time.sleep(1 + attempt)
             continue
 
-    return items
+    raise RuntimeError("Model did not return valid JSON array; aborting.")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -973,6 +983,11 @@ def main():
     with zipfile.ZipFile(args.inp, "r") as zin:
         paras, slide_files = extract_all_paragraphs(zin, slide_range)
 
+    # Index contexts for webhook correlation
+    for sf, idx, jp in paras:
+        if JP_ANY.search(jp):
+            TEXT_CONTEXT_INDEX.setdefault(jp, []).append({"slide": sf, "shape": None, "para": idx})
+
     src_strings = [t for _, _, t in paras if JP_ANY.search(t)]
     uniq = list(dict.fromkeys(src_strings))
     # Treat identity-mapped entries as missing to avoid caching failures where source == target
@@ -980,8 +995,19 @@ def main():
 
     i = 0
     calls = 0
+    total_batches = (len(missing) + args.batch - 1) // args.batch
+    last_update = time.time()
+    
     while i < len(missing):
         batch = missing[i:i+args.batch]
+        current_batch = calls + 1
+        
+        # Print progress at start and every 30 seconds
+        current_time = time.time()
+        if current_batch == 1 or (current_time - last_update) >= 30:
+            print(f"Processing batch {current_batch}/{total_batches} ({len(batch)} items)...")
+            last_update = current_time
+            
         out = batch_translate(client, args.model, batch, glossary)
         calls += 1
         for s, t in zip(batch, out):

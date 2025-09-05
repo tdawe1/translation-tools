@@ -5,32 +5,10 @@ Returns structured feedback for deterministic authority fixes.
 """
 import json
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from style_normalize import SMALL_WORDS, BANNED_PHRASES, title_case, get_style_guide
 
 def create_style_checker_prompt(translations: List[str], glossary: Dict[str, str] = None, deck_tone: Dict[str, Any] = None) -> str:
-    """Create prompt for style checking with JSON diagnostics output."""
-    
-    glossary_section = ""
-    if glossary:
-        glossary_items = [f'"{jp}" → "{en}"' for jp, en in list(glossary.items())[:10]]
-        glossary_section = f"""
-**Key glossary terms:**
-{'; '.join(glossary_items)}
-"""
-
-    deck_tone_section = ""
-    if deck_tone:
-        deck_tone_section = f"""
-**Deck Tone Profile (for tie-breaking ambiguous cases):**
-{json.dumps(deck_tone, ensure_ascii=False, indent=2)}
-"""
-    
-    style_guide = get_style_guide()
-    
-    from typing import List, Dict, Any, Optional
-
-def create_style_checker_prompt(glossary: Optional[Dict[str, str]] = None, deck_tone: Optional[Dict[str, Any]] = None) -> str:
     """Create prompt for style checking with JSON diagnostics output."""
     
     glossary_section = ""
@@ -294,13 +272,12 @@ def check_tone_drift(client, translations: List[str], deck_tone: Dict[str, Any])
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a linguistic analyst specializing in Japanese to English translation quality."},
+                {"role": "system", "content": "You are a linguistic analyst specializing in Japanese to English translation quality. Return ONLY a valid JSON object. No prose."},
                 {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.0
+            ]
         )
-        return json.loads(response.choices[0].message.content)
+        content = response.choices[0].message.content
+        return json.loads(content)
     except Exception as e:
         print(f"Error calling OpenAI API for tone drift check: {e}", file=sys.stderr)
         return {}
@@ -429,16 +406,17 @@ def model_style_check(client, translations: List[str],
             model="gpt-5",
             reasoning={"effort": "medium"},  # Balanced effort for style analysis
             text={"verbosity": "low"},
-            input=[{"role": "user", "content": [{"type": "input_text", "text": full_prompt}]}],
-            response_format={"type": "json_object"},
-            temperature=0.0  # Deterministic for consistent diagnostics
+            input=[{"role": "user", "content": [{"type": "input_text", "text": full_prompt}]}]
         )
         
         content = getattr(response, "output_text", None)
-        if content and callable(content):
-            content = content()
-        elif hasattr(response, 'choices') and response.choices:
+        if callable(content): content = content()
+        if not content and getattr(response, "choices", None):
             content = response.choices[0].message.content
+        if not content and getattr(response, "output", None):
+            try: content = response.output[0].content[0].text
+            except Exception: content = None
+        content = (content or "").strip()
         
         return json.loads(content) if content else {"style": {}}
         
