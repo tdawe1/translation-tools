@@ -276,20 +276,17 @@ def main():
 
     # Summary
     def money(x): return f"${x:,.4f}"
-    print(f"
-Deck: {os.path.basename(args.pptx)}")
+    print(f"Deck: {os.path.basename(args.pptx)}")
     print(f"Blocks detected: {len(blocks)}  |  Requests: {n_reqs} (batch-size={args.batch_size})")
     print(f"JP chars: {prod_jp_chars:,}  |  Producer input tokens: {prod_in_tokens:,}  |  Est. EN output tokens: {out_tokens_est:,}")
     if args.prefix_file:
         print(f"Prefix file: {args.prefix_file}")
         print(f"  Prefix tokens (Producer): {prefix_tokens[args.producer]:,}")
         print(f"  Prefix tokens (Reviewer): {prefix_tokens[args.reviewer]:,}")
-    print("
-=== Producer & Reviewer cost ===")
+    print("=== Producer & Reviewer cost ===")
     print(f"Producer: {args.producer:28} → {money(prod_cost)}  ({prod_parts})")
     print(f"Reviewer: {args.reviewer:28} → {money(rev_cost)}  ({rev_parts})")
-    print(f"TOTAL: {money(prod_cost + rev_cost)}
-")
+    print(f"TOTAL: {money(prod_cost + rev_cost)}")
     if args.anthropic_cache_write:
         print("Note: Anthropic first-call prefix billed at 'cached_write' rate.")
 
