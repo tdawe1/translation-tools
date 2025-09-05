@@ -10,9 +10,8 @@ from xml.etree import ElementTree as ET
 
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 JP_CORE = r'\u3040-\u309F\u30A0-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF'
-CJK_PUNCT = r'\u3000-\u303F'
-FULLWIDTH = r'\uFF00-\uFFEF'
-JP_ANY = re.compile(f'[{JP_CORE}{CJK_PUNCT}{FULLWIDTH}]')
+# Count only core Japanese letters (Hiragana/Katakana/Kanji). Exclude punctuation/fullwidth to avoid flagging bullets like '・'.
+JP_ANY = re.compile(f'[{JP_CORE}]')
 
 def count_file(path):
     total = 0
@@ -25,6 +24,9 @@ def count_file(path):
             for t in root.iter(A_NS + "t"):
                 if t.text:
                     s += t.text
+            # Remove common non-lexical marks often present in translated decks
+            s = s.replace('\u30FB', '')  # Katakana middle dot '・'
+            s = s.replace('\u3000', '')  # Ideographic space
             cnt = len(JP_ANY.findall(s))
             per_slide[sf] = cnt
             total += cnt
