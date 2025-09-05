@@ -18,6 +18,16 @@ Env:
 import argparse, json, os, re, shutil, sys, time, zipfile
 from xml.etree import ElementTree as ET
 
+# Import style consistency modules
+try:
+    from style_normalize import normalize_block, get_style_guide, apply_style_guide_to_prompt, detect_content_type as detect_content_type_text
+    from style_checker import model_style_check, apply_style_fixes, run_style_check
+    from pptx_format import apply_deck_formatting_profile
+    STYLE_MODULES_AVAILABLE = True
+except ImportError:
+    print("Warning: Style modules not found. Running without style consistency features.")
+    STYLE_MODULES_AVAILABLE = False
+
 # ---- OpenAI client (official library) ----
 try:
     from openai import OpenAI
@@ -633,6 +643,54 @@ def detect_content_type(para_element) -> str:
     
     return "bullet"  # Default assumption
 
+def apply_style_consistency_workflow(client, translations, original_items, glossary):
+    """
+    Apply comprehensive style consistency workflow:
+    1. Style normalization (deterministic)
+    2. Style checking with model (JSON diagnostics)
+    3. Authority fixes (deterministic)
+    
+    Args:
+        client: OpenAI client
+        translations: List of translated strings
+        original_items: Original Japanese strings for context
+        glossary: Glossary dict for terminology consistency
+        
+    Returns:
+        Style-consistent translations
+    """
+    if not STYLE_MODULES_AVAILABLE:
+        return translations
+    
+    # Stage 1: Deterministic style normalization
+    normalized_translations = []
+    for translation in translations:
+        # Detect content type for appropriate normalization
+        content_type = detect_content_type_text(translation)
+        normalized = normalize_block(translation, content_type)
+        normalized_translations.append(normalized)
+    
+    # Stage 2: Model-based style checking (if enabled)
+    enable_style_checking = os.getenv("ENABLE_STYLE_CHECKING", "1") == "1"
+    if enable_style_checking and _use_responses_api(os.getenv("OPENAI_MODEL", "gpt-5")):
+        try:
+            # Run style diagnostics
+            diagnostics = model_style_check(client, normalized_translations, glossary)
+            
+            # Apply authority fixes based on diagnostics
+            fixed_translations = apply_style_fixes(normalized_translations, diagnostics)
+            
+            return fixed_translations
+            
+        except Exception as e:
+            print(f"Style checking failed, using normalized translations: {e}")
+            return normalized_translations
+    else:
+        # Fallback to local-only style checking for consistency
+        local_diagnostics = run_style_check(normalized_translations, glossary)
+        fixed_translations = apply_style_fixes(normalized_translations, local_diagnostics)
+        return fixed_translations
+
 def batch_translate(client, model: str, items, glossary):
     """Translate list of strings JA->EN. Returns list of translations in order.
     Uses GPT-5 reasoning model with deep thinking for best fidelity.
@@ -642,11 +700,12 @@ def batch_translate(client, model: str, items, glossary):
     # Apply masking to protect fragile content
     items_masked, maps = zip(*[mask_fragile(x) for x in items]) if items else ([], [])
     
-    # Compose system prompt with optional style guide
+    # Compose system prompt with style guide integration
     style_guide = build_style_guide_text(
         os.getenv("STYLE_PRESET", ""), os.getenv("STYLE_GUIDE_FILE")
     )
-    sys_prompt = (
+    
+    base_prompt = (
         "You are a professional Japanese-to-English translator for B2B marketing decks. "
         "Think carefully about context, nuance, and business terminology before translating. "
         "Translate faithfully and naturally; keep the meaning and tone persuasive yet neutral. "
@@ -655,9 +714,17 @@ def batch_translate(client, model: str, items, glossary):
         "Use sentence case for sentences; Title Case for slide titles where appropriate. "
         "Respect the glossary exactly when terms occur. "
         "Never return Japanese text in the output. If a term is untranslatable (product name, brand), retain it but translate surrounding text. "
-        + ("\n" + style_guide if style_guide else "")
+        "Use the same tone throughout: concise, benefits-led, neutral-confident. "
+        "If the source is formal, keep it formal; otherwise default to professional marketing tone. "
     )
-
+    
+    # Add integrated style guide
+    if STYLE_MODULES_AVAILABLE:
+        sys_prompt = apply_style_guide_to_prompt(base_prompt)
+        if style_guide:
+            sys_prompt = f"{sys_prompt}\n\n{style_guide}"
+    else:
+        sys_prompt = base_prompt + ("\n" + style_guide if style_guide else "")
     user_payload = {
         "glossary": glossary or {},
         "strings": list(items_masked),
@@ -745,10 +812,15 @@ def batch_translate(client, model: str, items, glossary):
                 for original, notes in zip(items, notes_content):
                     if notes.strip():
                         _slide_notes_content[original] = notes
+                
+                # Apply style consistency workflow
+                final_out = apply_style_consistency_workflow(client, processed_out, items, glossary)
                         
-                return processed_out
+                return final_out
             else:
-                return out
+                # Apply style consistency to simple path too
+                final_out = apply_style_consistency_workflow(client, out, items, glossary)
+                return final_out
             
         # Fallback to simple JSON parsing
         try:
@@ -799,9 +871,14 @@ def batch_translate(client, model: str, items, glossary):
                         if notes.strip():
                             _slide_notes_content[original] = notes
                     
-                    return processed_out
+                    # Apply style consistency workflow
+                    final_out = apply_style_consistency_workflow(client, processed_out, items, glossary)
+                    
+                    return final_out
                 else:
-                    return out
+                    # Apply style consistency to fallback path
+                    final_out = apply_style_consistency_workflow(client, out, items, glossary)
+                    return final_out
         except Exception:
             # Not valid JSON array; retry
             time.sleep(1 + attempt)
@@ -914,6 +991,10 @@ def main():
                     if name in _slides_need_tightening:
                         apply_layout_tightening(root)
                     
+                    # Apply consistent PPTX formatting profile
+                    if STYLE_MODULES_AVAILABLE and os.getenv("ENABLE_FORMATTING_PROFILE", "1") == "1":
+                        apply_deck_formatting_profile(root)
+                    
                     _ensure_autofit(root)
                     data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
                     
@@ -950,6 +1031,38 @@ def main():
             "per_slide_before": per_before,
             "per_slide_after": per_after
         }, f, ensure_ascii=False, indent=2)
+
+    # Run style consistency audit
+    if STYLE_MODULES_AVAILABLE and os.getenv("ENABLE_STYLE_AUDIT", "1") == "1":
+        try:
+            from audit_style import run_full_audit, generate_audit_report, should_fail_ci
+            
+            # Load glossary for audit
+            audit_glossary = {}
+            if args.glossary and os.path.exists(args.glossary):
+                with open(args.glossary, "r", encoding="utf-8") as f:
+                    audit_glossary = json.load(f)
+            
+            # Run comprehensive style audit
+            audit_results = run_full_audit(args.bilingual_csv, audit_glossary)
+            
+            # Generate report
+            report_path = args.bilingual_csv.replace('.csv', '_STYLE_REPORT.csv')
+            issue_count = generate_audit_report(audit_results, report_path)
+            
+            if issue_count > 0:
+                print(f"Style issues found: {issue_count}")
+                print(f"Style report: {report_path}")
+                
+                # Check if should fail (for CI integration)
+                should_fail, reason = should_fail_ci(audit_results)
+                if should_fail:
+                    print(f"WARNING: {reason}")
+            else:
+                print("Style audit: PASSED")
+                
+        except Exception as e:
+            print(f"Style audit failed: {e}")
 
     print("DONE")
     print("Output:", args.outp)
