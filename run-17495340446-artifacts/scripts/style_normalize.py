@@ -59,28 +59,27 @@ def title_case(s: str) -> str:
     words = s.split()
     if not words:
         return s
-    
+
     result = []
     for i, word in enumerate(words):
         # Check if word contains formatting tags
         if '[' in word and ']' in word:
             result.append(word)  # Skip formatting tags
             continue
-            
+
         lower_word = word.lower()
         is_first_or_last = (i == 0 or i == len(words) - 1)
-        
+
         if is_first_or_last or lower_word not in SMALL_WORDS:
-            # Capitalize first letter, preserve rest
-            if word:
+            # Only transform all-lowercase tokens; preserve brand/ACRONYM casing
+            if word.islower():
                 result.append(word[0].upper() + word[1:])
             else:
                 result.append(word)
         else:
             result.append(lower_word)
-    
-    return " ".join(result)
 
+    return " ".join(result)
 def bullet_fragment(s: str) -> str:
     """Convert to bullet fragment: remove terminal punctuation, keep capitalization."""
     s = s.strip()
@@ -99,7 +98,7 @@ def replace_banned_phrases(s: str) -> str:
         # Case-insensitive replacement preserving original case pattern
         pattern = re.compile(re.escape(banned), re.IGNORECASE)
         
-        def replace_match(match):
+        def replace_match(match, replacement=replacement):
             original = match.group(0)
             if original.isupper():
                 return replacement.upper()
