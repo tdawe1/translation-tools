@@ -402,7 +402,7 @@ def model_style_check(client, translations: List[str], glossary: Dict[str, str] 
     try:
         response = client.responses.create(
             model="gpt-5",
-            reasoning_effort="medium",  # Balanced effort for style analysis
+            reasoning={"effort": "medium"},  # Balanced effort for style analysis
             text={"verbosity": "low"},
             input=[{"role": "user", "content": [{"type": "input_text", "text": full_prompt}]}],
             response_format={"type": "json_object"},
