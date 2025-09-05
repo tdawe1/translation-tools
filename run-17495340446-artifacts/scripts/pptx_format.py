@@ -98,9 +98,9 @@ def _apply_bullet_indentation(pPr, level, is_title=False):
     hanging_indent = 182880  # ~0.2 inch hanging indent
     
     if level == 0:
-        # First level bullets
+        # First level bullets (hanging indent)
         pPr.set("marL", "0")
-        pPr.set("indent", str(hanging_indent))
+        pPr.set("indent", f"-{hanging_indent}")
     elif level == 1:
         # Second level bullets  
         left_margin = base_indent
