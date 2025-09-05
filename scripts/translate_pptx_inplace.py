@@ -766,7 +766,9 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
             return fixed_translations
             
         except Exception as e:
+            import traceback
             print(f"Style checking failed, using normalized translations: {e}")
+            print(f"Full traceback: {traceback.format_exc()}")
             return normalized_translations
     else:
         # Fallback to local-only style checking for consistency
