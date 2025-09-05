@@ -666,7 +666,7 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
     normalized_translations = []
     for translation in translations:
         # Detect content type for appropriate normalization
-        content_type = detect_content_type(translation)
+        content_type = detect_content_type_text(translation)
         normalized = normalize_block(translation, content_type)
         normalized_translations.append(normalized)
     
