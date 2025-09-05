@@ -120,22 +120,25 @@ def _apply_run_formatting(run, is_title=False):
     
     # Set minimum font sizes (in half-points: 1pt = 100 half-points)
     current_size = rPr.get("sz")
-    if current_size:
-        size_val = int(current_size)
-        min_size = 1800 if is_title else 1100  # 18pt for titles, 11pt for body
-        if size_val < min_size:
+    min_size = 1800 if is_title else 1100  # 18pt for titles, 11pt for body
+    if current_size is None:
+        rPr.set("sz", str(min_size))
+    else:
+        try:
+            if int(current_size) < min_size:
+                rPr.set("sz", str(min_size))
+        except ValueError:
             rPr.set("sz", str(min_size))
-    
+
     # Ensure font family is set for consistency
     latin = rPr.find(A_NS + "latin")
     if latin is None:
         latin = ET.SubElement(rPr, A_NS + "latin")
-    
+
     # Use brand font if not already specified
     if not latin.get("typeface"):
         brand_font = "Inter"  # Default professional font, can be customized
         latin.set("typeface", brand_font)
-
 def apply_deck_formatting_profile(root):
     """
     Apply formatting profile to entire slide, detecting content types.
