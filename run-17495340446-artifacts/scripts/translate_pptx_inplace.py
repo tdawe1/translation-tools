@@ -721,9 +721,10 @@ def batch_translate(client, model: str, items, glossary):
     # Add integrated style guide
     if STYLE_MODULES_AVAILABLE:
         sys_prompt = apply_style_guide_to_prompt(base_prompt)
+        if style_guide:
+            sys_prompt = f"{sys_prompt}\n\n{style_guide}"
     else:
         sys_prompt = base_prompt + ("\n" + style_guide if style_guide else "")
-
     user_payload = {
         "glossary": glossary or {},
         "strings": list(items_masked),
