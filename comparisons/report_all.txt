@@ -1,0 +1,26 @@
+Total runs analyzed: 13
+Total unique JP strings: 834
+Strings with differing translations across runs: 812
+Run 1: jp_chars_before=764 jp_chars_after=59 api_calls=1
+Run 2: jp_chars_before=764 jp_chars_after=59 api_calls=1
+Run 3: jp_chars_before=13276 jp_chars_after=13276 api_calls=21
+Run 4: jp_chars_before=13276 jp_chars_after=13276 api_calls=21
+Run 5: jp_chars_before=13276 jp_chars_after=13276 api_calls=21
+Run 6: jp_chars_before=13276 jp_chars_after=13276 api_calls=21
+Run 7: jp_chars_before=13276 jp_chars_after=13276 api_calls=21
+Run 8: jp_chars_before=13276 jp_chars_after=3259 api_calls=21
+Run 9: jp_chars_before=13276 jp_chars_after=1151 api_calls=21
+Run 10: jp_chars_before=13276 jp_chars_after=1160 api_calls=21
+Run 11: jp_chars_before=13276 jp_chars_after=3117 api_calls=21
+Run 12: jp_chars_before=13276 jp_chars_after=2713 api_calls=21
+Run 13: jp_chars_before=13276 jp_chars_after=2899 api_calls=21
+
+Recommended base run: Run 1 (lowest residual JP: 59)
+
+Plan:
+- Lock determinism: temperature=0.0 (already), add seed if supported.
+- Enforce style: keep STYLE_PRESET=gengo-ja-en; optionally provide custom STYLE_GUIDE_FILE for domain prefs.
+- Expand glossary: add proper nouns and recurring terms; seed cache with consensus outputs.
+- Consensus merge: build a merged cache using majority vote per source; rerun once to apply uniformly.
+- Title-case normalizer: post-pass for slide titles only (no layout impact).
+- QA gates: fail if jp_chars_after > threshold; list residual JP per slide.

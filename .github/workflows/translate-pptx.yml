@@ -129,6 +129,9 @@ jobs:
         env:
           STYLE_PRESET: gengo-ja-en
           OPENAI_TEMPERATURE: ${{ inputs.temperature }}
+          USE_TAGS: "1"
+          USE_PLACEHOLDERS: "1"
+          ENABLE_AUTOFIT: "1"
         run: |
           python scripts/translate_pptx_inplace.py \
             --in input.pptx \

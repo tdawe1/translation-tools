@@ -1,0 +1,12 @@
+{
+  "unique_strings": 36,
+  "api_calls": 1,
+  "jp_chars_before": 492,
+  "jp_chars_after": 22,
+  "per_slide_before": {
+    "ppt/slides/slide33.xml": 492
+  },
+  "per_slide_after": {
+    "ppt/slides/slide33.xml": 22
+  }
+}

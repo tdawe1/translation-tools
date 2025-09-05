@@ -280,8 +280,9 @@ def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
             pass
 
     preset = (style_preset or "").strip().lower()
+    base_guide = ""
     if preset in {"gengo", "gengo-ja-en", "gengo_ja_en"}:
-        return (
+        base_guide = (
             "Follow these JP→EN style rules (Gengo-inspired):\n"
             "- Tone: Natural, clear business English; avoid overly literal phrasing.\n"
             "- Honorifics: Omit honorifics unless required for meaning.\n"
@@ -296,7 +297,75 @@ def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
             "- Register: Prefer active voice; concise and persuasive B2B tone.\n"
             "- No additions: Do not summarize, omit, or invent content."
         )
-    return ""
+    
+    # Add conciseness rules for expansion management
+    conciseness_rules = (
+        "\n\nCONCISENESS RULES for slide translation:\n"
+        "- Use fragments, not full sentences in bullets\n"
+        "- Remove filler: \"in order to\"→\"to\", \"utilize\"→\"use\", \"as well as\"→\"and\"\n"
+        "- Drop articles where clear: \"the\", \"a\"\n"
+        "- Cut most instances of \"that\"\n"
+        "- Use symbols: \"and\"→\"&\" in labels, \"approximately\"→\"~\", \"versus\"→\"vs.\"\n"
+        "- One verb per bullet; cut adverbs\n"
+        "- Collapse double nouns: \"customer onboarding process\"→\"customer onboarding\"\n"
+        "- Keep parallel structure in bullet lists"
+    )
+    
+    return base_guide + conciseness_rules if base_guide else conciseness_rules
+
+def calculate_expansion_ratio(original_jp: str, translated_en: str) -> float:
+    """Calculate expansion ratio between Japanese and English text."""
+    jp_len = len(original_jp.strip())
+    en_len = len(translated_en.strip())
+    return en_len / jp_len if jp_len > 0 else 1.0
+
+def condense_text_block(client, model: str, text: str, target_ratio: float = 0.85) -> str:
+    """Stage 1: Compress text by removing filler while preserving meaning."""
+    if not text or len(text) < 50:  # Skip very short text
+        return text
+        
+    reduction_pct = int((1 - target_ratio) * 100)
+    prompt = f"""Shorten this English text by ~{reduction_pct}% while preserving all meaning.
+
+REQUIREMENTS:
+- Keep all numbers, URLs, and technical terms exactly as-is
+- Preserve any markup tags or placeholders ⟦…⟧
+- Use concise fragments for bullets, not full sentences
+- Remove filler: "in order to"→"to", "utilize"→"use", "as well as"→"and"
+- Drop unnecessary articles ("the", "a") and instances of "that"
+- One verb per bullet; cut adverbs where possible
+- Maintain professional tone and parallel structure
+- Do NOT change meaning or remove actual content
+
+Text to shorten:
+{text}"""
+
+    try:
+        if _use_responses_api(model):
+            resp = client.responses.create(
+                model=model,
+                reasoning_effort="high",
+                verbosity="low", 
+                input=[{"role": "user", "content": prompt}],
+                response_format={"type": "text"},
+                temperature=0.2,
+            )
+            content = getattr(resp, "output_text", None)
+            if not content and getattr(resp, "output", None):
+                try:
+                    content = resp.output[0].content[0].text
+                except Exception:
+                    pass
+            return content.strip() if content else text
+        else:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            return resp.choices[0].message.content.strip()
+    except Exception:
+        return text  # Fallback to original if compression fails
 
 def batch_translate(client, model: str, items, glossary):
     """Translate list of strings JA->EN. Returns list of translations in order.
@@ -355,14 +424,41 @@ def batch_translate(client, model: str, items, glossary):
         if data:
             # Unmask fragile content in results
             out = [unmask_fragile(str(y), maps[i]) for i, y in enumerate(data)]
-            return out
+            
+            # Apply expansion policy if text is too long
+            if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
+                processed_out = []
+                for i, (original, translated) in enumerate(zip(items, out)):
+                    expansion_ratio = calculate_expansion_ratio(original, translated)
+                    # Apply compression for high expansion ratios
+                    if expansion_ratio > 1.5:  # Configurable threshold
+                        condensed = condense_text_block(client, model, translated, target_ratio=0.85)
+                        processed_out.append(condensed)
+                    else:
+                        processed_out.append(translated)
+                return processed_out
+            else:
+                return out
             
         # Fallback to simple JSON parsing
         try:
             data = json.loads(content)
             if isinstance(data, list) and len(data) == len(items):
                 out = [unmask_fragile(str(y), maps[i]) for i, y in enumerate(data)]
-                return out
+                
+                # Apply expansion policy for fallback path too
+                if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
+                    processed_out = []
+                    for i, (original, translated) in enumerate(zip(items, out)):
+                        expansion_ratio = calculate_expansion_ratio(original, translated)
+                        if expansion_ratio > 1.5:
+                            condensed = condense_text_block(client, model, translated, target_ratio=0.85)
+                            processed_out.append(condensed)
+                        else:
+                            processed_out.append(translated)
+                    return processed_out
+                else:
+                    return out
         except Exception:
             # Not valid JSON array; retry
             time.sleep(1 + attempt)
