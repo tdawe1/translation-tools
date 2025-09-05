@@ -79,12 +79,11 @@ def normalize_para_text(p_el):
     return "".join(parts)
 
 def set_para_text(p_el, new_text: str):
-    """Word-aware replacement that preserves line breaks as <a:br/> and avoids mid-word splits."""
-    t_tag = A_NS + "t"
-    r_tag = A_NS + "r"
-    br_tag = A_NS + "br"
+    """Word-aware replacement. Preserves word boundaries and turns '\n' into <a:br/>."""
+    t_tag = A_NS + "t"; r_tag = A_NS + "r"; br_tag = A_NS + "br"
+    import re
 
-    # Get existing runs (to preserve basic styling distribution if present)
+    # Collect runs (preserve overall styling distribution), clear <a:br/> and run text
     runs = [child for child in p_el if child.tag == r_tag]
     if not runs:
         r = ET.Element(r_tag)
@@ -92,7 +91,6 @@ def set_para_text(p_el, new_text: str):
         p_el.insert(0, r)
         runs = [r]
 
-    # Clear all run text and remove existing <a:br/>
     for child in list(p_el):
         if child.tag == br_tag:
             p_el.remove(child)
@@ -100,111 +98,75 @@ def set_para_text(p_el, new_text: str):
         t = r.find(t_tag) or ET.SubElement(r, t_tag)
         t.text = ""
 
-    # Split translated text into "lines" (we'll re-insert <a:br/> nodes)
+    # Tokenize: keep whitespace; use None sentinel for newline
+    def tokenize(s): return re.findall(r"\S+|\s+", s)
+    tokens = []
     lines = new_text.split("\n")
+    for i, line in enumerate(lines):
+        tokens.extend(tokenize(line))
+        if i < len(lines) - 1:
+            tokens.append(None)  # newline marker
 
-    # Tokenize by words but keep whitespace separators so we can reassemble cleanly
-    def tokenize(s):
-        return re.findall(r'\S+|\s+', s)
-
-    # Build a sequence of text tokens and line break markers
-    elements = []
-    for li, line in enumerate(lines):
-        elements.extend(tokenize(line))
-        if li < len(lines) - 1:
-            elements.append(None)  # sentinel = newline -> <a:br/>
-
-    # Simple case: one run - put all text in it and insert <a:br/> elements properly
+    # Single run: dump text, insert <a:br/> at markers
     if len(runs) == 1:
-        run = runs[0]
-        t_elem = run.find(t_tag)
-        text_parts = []
-        insert_pos = 0
-        
-        for elem in elements:
-            if elem is None:
-                # Insert accumulated text first
-                if text_parts:
-                    t_elem.text = "".join(text_parts)
-                    text_parts = []
-                
+        t = runs[0].find(t_tag)
+        buf = []
+        br_count = 0
+        for tok in tokens:
+            if tok is None:
                 # Insert <a:br/> after the run
                 br = ET.Element(br_tag)
-                parent = p_el
-                run_idx = list(parent).index(run)
-                parent.insert(run_idx + 1 + insert_pos, br)
-                insert_pos += 1
+                run_idx = list(p_el).index(runs[0])
+                p_el.insert(run_idx + 1 + br_count, br)
+                br_count += 1
             else:
-                text_parts.append(elem)
-        
-        # Set any remaining text
-        if text_parts:
-            t_elem.text = (t_elem.text or "") + "".join(text_parts)
-        
+                buf.append(tok)
+        t.text = "".join(buf).strip()
         return
 
-    # Multiple runs: distribute text across runs while preserving word boundaries
-    text_only = [e for e in elements if e is not None]
-    total_chars = sum(len(e) for e in text_only)
-    
-    # Calculate target lengths based on original distribution
-    orig_lens = [len((r.find(t_tag) or ET.Element(t_tag)).text or "") for r in runs]
-    orig_total = sum(orig_lens) or total_chars or 1
-    
+    # Multi-run: distribute on word boundaries proportional to original text lengths
+    orig_lens = [len((r.find(t_tag).text or "")) for r in runs]
+    total_words = sum(len(x) for x in tokens if isinstance(x, str))
+    total_base = sum(orig_lens) or total_words or 1
     targets = []
-    for orig_len in orig_lens:
-        target = int(total_chars * (orig_len / orig_total)) if orig_total > 0 else total_chars // len(runs)
-        targets.append(max(1, target))  # At least 1 char per run
-    
-    # Adjust for rounding errors
-    diff = total_chars - sum(targets)
-    if diff != 0 and targets:
-        targets[-1] += diff
+    acc = 0
+    for L in orig_lens:
+        share = round(total_words * (L / total_base))
+        targets.append(share); acc += share
+    if targets:
+        targets[-1] += (total_words - acc)  # fix rounding drift
 
-    # Distribute text tokens across runs
-    text_idx = 0
-    br_positions = []  # Track where to insert <a:br/> elements
-    
-    for run_idx, (run, target_len) in enumerate(zip(runs, targets)):
-        t_elem = run.find(t_tag)
-        current_len = 0
-        run_text = []
-        
-        # Fill this run up to target length, respecting word boundaries
-        while text_idx < len(text_only) and current_len < target_len:
-            token = text_only[text_idx]
-            token_len = len(token)
-            
-            # If adding this token would exceed target and we have some text already,
-            # and it's not whitespace, stop here
-            if current_len > 0 and current_len + token_len > target_len and not token.isspace():
+    def consume(n_chars):
+        taken, count = [], 0
+        while tokens:
+            tok = tokens[0]
+            if tok is None:  # stop before newline; caller will insert <a:br/>
                 break
-                
-            run_text.append(token)
-            current_len += token_len
-            text_idx += 1
-        
-        t_elem.text = "".join(run_text)
-    
-    # Put any remaining text in the last run
-    if text_idx < len(text_only):
-        last_run = runs[-1]
-        last_t = last_run.find(t_tag)
-        remaining = "".join(text_only[text_idx:])
-        last_t.text = (last_t.text or "") + remaining
-    
-    # Handle line breaks by inserting <a:br/> elements between runs where needed
-    # This is a simplified approach - insert breaks based on original newline positions
-    elem_idx = 0
-    for i, elem in enumerate(elements):
-        if elem is None:  # This was a newline
-            # Find appropriate position to insert <a:br/>
-            # Insert after first run as a simple approach
-            if len(runs) > 1:
-                br = ET.Element(br_tag)
-                parent = p_el
-                first_run_idx = list(parent).index(runs[0])
-                parent.insert(first_run_idx + 1, br)
+            need = len(tok)
+            # respect word boundaries
+            if count > 0 and not tok.isspace() and count + need > n_chars:
+                break
+            taken.append(tokens.pop(0))
+            count += need
+            if tokens and tokens[0] is None:
+                break
+        return "".join(taken)
+
+    # Fill each run, inserting <a:br/> exactly where newlines occur
+    for r, n in zip(runs, targets):
+        t = r.find(t_tag)
+        t.text = consume(n)
+        while tokens and tokens[0] is None:
+            tokens.pop(0)
+            br = ET.Element(br_tag)
+            run_idx = list(p_el).index(r)
+            p_el.insert(run_idx + 1, br)
+
+    # Any leftovers go into the last run
+    if tokens:
+        tail = "".join(tok for tok in tokens if isinstance(tok, str))
+        last_t = runs[-1].find(t_tag)
+        last_t.text = (last_t.text or "") + tail
 
 def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set | None = None):
     """Return a flat list of (slide_name, paragraph_index, text)."""
@@ -286,55 +248,22 @@ def _chat_create(client, model: str, sys_prompt: str, user_payload: dict, temper
 def _extract_json_array(s: str, expected_len: int):
     import json, re
     s = re.sub(r"^```(?:json)?|```$", "", s.strip(), flags=re.M)
-    
-    # Try to find JSON array patterns, being more flexible
-    patterns = [
-        r"\[\s*(?:\"|{|\d)",  # Original pattern
-        r"\[\s*\{",           # Array of objects
-        r"\[\s*\"",           # Array of strings
-    ]
-    
-    for pattern in patterns:
-        m = re.search(pattern, s, flags=re.S)
-        if m:
-            start = m.start()
-            # Use JSONDecoder for more robust parsing
-            decoder = json.JSONDecoder()
+    dec = json.JSONDecoder()
+    in_str = esc = False; i = 0; n = len(s)
+    while i < n:
+        ch = s[i]
+        if esc: esc = False
+        elif ch == '\\' and in_str: esc = True
+        elif ch == '"': in_str = not in_str
+        elif not in_str and ch == '[':
             try:
-                # Try to decode from the array start position
-                arr, idx = decoder.raw_decode(s, start)
-                if isinstance(arr, list) and (expected_len == 0 or len(arr) >= expected_len):
-                    # Accept arrays with >= expected length to handle chatty responses
-                    return arr[:expected_len] if expected_len > 0 else arr
-            except (json.JSONDecodeError, ValueError):
-                # Fall back to manual bracket matching
-                depth = 0
-                in_string = False
-                escape_next = False
-                
-                for i, ch in enumerate(s[start:], start):
-                    if escape_next:
-                        escape_next = False
-                        continue
-                    if ch == '\\' and in_string:
-                        escape_next = True
-                        continue
-                    if ch == '"' and not escape_next:
-                        in_string = not in_string
-                    elif not in_string:
-                        if ch == "[": 
-                            depth += 1
-                        elif ch == "]":
-                            depth -= 1
-                            if depth == 0:
-                                frag = s[start:i+1]
-                                try:
-                                    arr = json.loads(frag)
-                                    if isinstance(arr, list) and (expected_len == 0 or len(arr) >= expected_len):
-                                        return arr[:expected_len] if expected_len > 0 else arr
-                                except Exception:
-                                    pass
-                                break
+                obj, end = dec.raw_decode(s, i)
+            except json.JSONDecodeError:
+                i += 1; continue
+            if isinstance(obj, list) and (expected_len == 0 or len(obj) >= expected_len):
+                return obj[:expected_len] if expected_len else obj
+            i = end; continue
+        i += 1
     return None
 
 def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
