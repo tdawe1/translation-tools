@@ -722,7 +722,7 @@ def detect_content_type(para_element) -> str:
     
     return "bullet"  # Default assumption
 
-def apply_style_consistency_workflow(client, translations, original_items, glossary, deck_tone):
+def apply_style_consistency_workflow(client, translations, original_items, glossary, deck_tone, offline_mode=False):
     """
     Apply comprehensive style consistency workflow:
     1. Style normalization (deterministic)
@@ -753,9 +753,9 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
             normalized = bullet_fragment(normalize_punct(translation))
         normalized_translations.append(normalized)
     
-    # Stage 2: Model-based style checking (if enabled)
+    # Stage 2: Model-based style checking (if enabled and not in offline mode)
     enable_style_checking = os.getenv("ENABLE_STYLE_CHECKING", "1") == "1"
-    if enable_style_checking and _use_responses_api(os.getenv("OPENAI_MODEL", "gpt-5")):
+    if not offline_mode and enable_style_checking and _use_responses_api(os.getenv("OPENAI_MODEL", "gpt-5")):
         try:
             # Run style diagnostics
             diagnostics = model_style_check(client, normalized_translations, glossary, deck_tone)
@@ -770,18 +770,40 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
             print(f"Style checking failed, using normalized translations: {e}")
             print(f"Full traceback: {traceback.format_exc()}")
             return normalized_translations
-    else:
-        # Fallback to local-only style checking for consistency
+    elif not offline_mode:
+        # Fallback to local-only style checking for consistency (skip in offline mode)
         local_diagnostics = run_style_check(client, normalized_translations, glossary, deck_tone)
         fixed_translations = apply_style_fixes(normalized_translations, local_diagnostics)
         return fixed_translations
+    else:
+        # In offline mode, just return the normalized translations
+        logging.info("Offline mode: skipping style checking")
+        return normalized_translations
 
-def batch_translate(client, model: str, items, glossary):
+def mock_translate(items):
+    """Generate mock translations for offline testing."""
+    mock_translations = []
+    for i, item in enumerate(items):
+        if not item or not item.strip():
+            mock_translations.append("")
+            continue
+        
+        # Generate predictable mock translation
+        mock = f"Mock EN {i+1}: {item[:20]}..." if len(item) > 20 else f"Mock EN {i+1}: {item}"
+        mock_translations.append(mock)
+    
+    return mock_translations
+
+def batch_translate(client, model: str, items, glossary, offline_mode=False):
     """Translate list of strings JA->EN. Returns list of translations in order.
     Uses GPT-5 reasoning model with deep thinking for best fidelity.
     Falls back to Chat Completions for non-GPT-5 models.
     Expects a strict JSON array output.
     """
+    if offline_mode:
+        logging.info(f"Running in offline mode - using mock translations for {len(items)} items")
+        return mock_translate(items)
+    
     global _slide_notes_content
     logging.debug(f"Starting batch translation of {len(items)} items with model {model}")
     # Apply masking to protect fragile content
@@ -889,7 +911,7 @@ def batch_translate(client, model: str, items, glossary):
                         deck_tone = json.load(f)
 
                 # Apply style consistency workflow
-                final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, deck_tone)
+                final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, deck_tone, args.offline)
                         
                 return final_out
             else:
@@ -901,7 +923,7 @@ def batch_translate(client, model: str, items, glossary):
                         deck_tone = json.load(f)
 
                 # Apply style consistency to simple path too
-                final_out = apply_style_consistency_workflow(client, out, items, glossary, deck_tone)
+                final_out = apply_style_consistency_workflow(client, out, items, glossary, deck_tone, args.offline)
                 return final_out
             
         # Fallback to simple JSON parsing
@@ -953,12 +975,12 @@ def batch_translate(client, model: str, items, glossary):
                             _slide_notes_content[original] = notes
                     
                     # Apply style consistency workflow
-                    final_out = apply_style_consistency_workflow(client, processed_out, items, glossary)
+                    final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, None, args.offline)
                     
                     return final_out
                 else:
                     # Apply style consistency to fallback path
-                    final_out = apply_style_consistency_workflow(client, out, items, glossary)
+                    final_out = apply_style_consistency_workflow(client, out, items, glossary, None, args.offline)
                     return final_out
         except Exception:
             # Not valid JSON array; retry
@@ -981,6 +1003,7 @@ def main():
     ap.add_argument("--style-preset", default="gengo", choices=["gengo","minimal"], help="Style preset to load into prompts (default: gengo)")
     ap.add_argument("--style-file", default=None, help="Path to custom style guide file")
     ap.add_argument("--fresh", action="store_true", help="Backup existing output files with timestamps before creating new ones")
+    ap.add_argument("--offline", action="store_true", help="Run in offline mode using mock translations for testing")
     args = ap.parse_args()
     
     # Backup existing files if --fresh flag is used  
@@ -1004,19 +1027,26 @@ def main():
             start, end = int(parts[0]), int(parts[1])
             slide_range = set(range(start, end + 1))
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logging.error("OPENAI_API_KEY not set in environment")
-        sys.exit(2)
+    # Skip API setup in offline mode
+    if args.offline:
+        logging.info("Running in OFFLINE MODE - using mock translations")
+        client = None  # No API client needed
+    else:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logging.error("OPENAI_API_KEY not set in environment")
+            sys.exit(2)
+        
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+        if base_url:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+        else:
+            client = OpenAI(api_key=api_key)
     
     logging.info(f"Starting translation: {args.inp} -> {args.outp}")
     logging.info(f"Model: {args.model}, Batch size: {args.batch}")
-
-    base_url = os.getenv("OPENAI_BASE_URL", "").strip()
-    if base_url:
-        client = OpenAI(api_key=api_key, base_url=base_url)
-    else:
-        client = OpenAI(api_key=api_key)
+    if args.offline:
+        logging.info("Offline mode: generating mock translations for testing")
 
     glossary = {}
     if args.glossary and os.path.exists(args.glossary):
@@ -1097,7 +1127,7 @@ def main():
         
         while not batch_success and attempt < 3:
             try:
-                out = batch_translate(client, args.model, batch, glossary)
+                out = batch_translate(client, args.model, batch, glossary, args.offline)
                 batch_success = True
             except Exception as e:
                 attempt += 1
