@@ -15,12 +15,15 @@ JP_PUNCT_MAP = str.maketrans({
     "「": '"',     # JP open quote -> straight quote
     "」": '"',     # JP close quote -> straight quote
     "／": "/",     # JP slash -> EN slash
-    "・": "•",     # JP bullet -> EN bullet
+    "・": "·",     # JP middle dot -> EN middle dot (preserve semantics)
     "　": " "      # JP full-width space -> EN space
 })
 
 # Banned phrases for tone consistency
 BANNED_PHRASES = {
+    "leveraging": "using",
+    "leveraged": "used",
+    "leverages": "uses",
     "utilize": "use",
     "utilise": "use", 
     "cutting-edge": "advanced",
@@ -96,7 +99,7 @@ def replace_banned_phrases(s: str) -> str:
     result = s
     for banned, replacement in BANNED_PHRASES.items():
         # Case-insensitive replacement preserving original case pattern
-        pattern = re.compile(re.escape(banned), re.IGNORECASE)
+        pattern = re.compile(rf"\b{re.escape(banned)}\b", re.IGNORECASE)
         
         def replace_match(match, replacement=replacement):
             original = match.group(0)
@@ -188,10 +191,11 @@ def get_style_guide() -> str:
     return """
 **STYLE GUIDE**
 
-**Voice & tone**
-• US English, marketing slide voice
-• Benefits > features; plain verbs; no hype  
-• Avoid: "utilize", "cutting-edge", "world-class", "leverage"
+**Tone & register:**
+• Infer and mirror the tone from the Japanese (formality, directness, persuasion level, technicality).
+• If the tone is ambiguous, default to neutral-professional.
+• Do **not** add hype or soften/strengthen claims. Don't "improve" style beyond what's needed for natural US English.
+• Preserve tags/placeholders exactly; keep bullet structure.
 
 **Structure**
 • Titles: Title Case, ≤ 10–12 words

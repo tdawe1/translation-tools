@@ -98,8 +98,8 @@ def _apply_bullet_indentation(pPr, level, is_title=False):
     hanging_indent = 182880  # ~0.2 inch hanging indent
     
     if level == 0:
-        # First level bullets (hanging indent)
-        pPr.set("marL", "0")
+        # First level bullets — hanging indent
+        pPr.set("marL", str(hanging_indent))
         pPr.set("indent", f"-{hanging_indent}")
     elif level == 1:
         # Second level bullets  
@@ -120,25 +120,22 @@ def _apply_run_formatting(run, is_title=False):
     
     # Set minimum font sizes (in half-points: 1pt = 100 half-points)
     current_size = rPr.get("sz")
-    min_size = 1800 if is_title else 1100  # 18pt for titles, 11pt for body
-    if current_size is None:
-        rPr.set("sz", str(min_size))
-    else:
-        try:
-            if int(current_size) < min_size:
-                rPr.set("sz", str(min_size))
-        except ValueError:
+    if current_size:
+        size_val = int(current_size)
+        min_size = 1800 if is_title else 1100  # 18pt for titles, 11pt for body
+        if size_val < min_size:
             rPr.set("sz", str(min_size))
-
+    
     # Ensure font family is set for consistency
     latin = rPr.find(A_NS + "latin")
     if latin is None:
         latin = ET.SubElement(rPr, A_NS + "latin")
-
+    
     # Use brand font if not already specified
     if not latin.get("typeface"):
         brand_font = "Inter"  # Default professional font, can be customized
         latin.set("typeface", brand_font)
+
 def apply_deck_formatting_profile(root):
     """
     Apply formatting profile to entire slide, detecting content types.
@@ -146,68 +143,24 @@ def apply_deck_formatting_profile(root):
     Args:
         root: XML root element of slide
     """
-    # Track if we've found title elements
-    title_found = False
-    
- def apply_deck_formatting_profile(root):
--    # Track if we've found title elements
--    title_found = False
--    
--    # Look for title placeholders and apply title formatting
--    for shape in root.iter():
--        if shape.tag.endswith("}sp"):
--            nvSpPr = shape.find(".//" + P_NS + "nvSpPr")
--            if nvSpPr is None:
--                continue
--            nvPr = nvSpPr.find(P_NS + "nvPr")
--            if nvPr is None:
--                continue
--            ph = nvPr.find(P_NS + "ph")
--            if ph is not None and ph.get("type") in ["title", "ctrTitle"]:
--                title_found = True
--                txBody = shape.find(".//" + A_NS + "txBody")
--                if txBody is not None:
--                    apply_textframe_profile_xml(shape, is_title=True)
--    
--    # Apply body formatting to all other text frames
--    for txBody in root.iter(A_NS + "txBody"):
--        # Skip if we already processed this as a title
--        parent_shape = txBody
--        while parent_shape is not None and not parent_shape.tag.endswith("}sp"):
--            parent_shape = parent_shape.getparent() if hasattr(parent_shape, 'getparent') else None
--        
--        is_title_frame = False
--        if parent_shape is not None:
--            nvSpPr = parent_shape.find(".//" + P_NS + "nvSpPr")
--            if nvSpPr is not None:
--                nvPr = nvSpPr.find(P_NS + "nvPr") 
--                if nvPr is not None:
--                    ph = nvPr.find(P_NS + "ph")
--                    if ph is not None and ph.get("type") in ["title", "ctrTitle"]:
--                        is_title_frame = True
--        
--        if not is_title_frame:
-    # Collect title text bodies first
-    title_tx_bodies = set()
-    for shape in root.iter():
-        if shape.tag.endswith("}sp"):
-            nvSpPr = shape.find(".//" + P_NS + "nvSpPr")
-            if nvSpPr is None:
-                continue
+    # To reliably find the parent shape of a text body, we must iterate through shapes, not all elements.
+    # This avoids the use of getparent(), which is not available in xml.etree.ElementTree.
+    for shape in root.iter(P_NS + "sp"):
+        is_title = False
+        # Check for title placeholders in shape properties
+        nvSpPr = shape.find(".//" + P_NS + "nvSpPr")
+        if nvSpPr is not None:
             nvPr = nvSpPr.find(P_NS + "nvPr")
-            if nvPr is None:
-                continue
-            ph = nvPr.find(P_NS + "ph")
-            if ph is not None and ph.get("type") in ("title", "ctrTitle"):
-                tx = shape.find(".//" + A_NS + "txBody")
-                if tx is not None:
-                    title_tx_bodies.add(tx)
-                    apply_textframe_profile_xml(tx, is_title=True)
+            if nvPr is not None:
+                ph = nvPr.find(P_NS + "ph")
+                if ph is not None and ph.get("type") in ["title", "ctrTitle"]:
+                    is_title = True
 
-    # Apply body formatting to non-title text bodies
-    for txBody in root.iter(A_NS + "txBody"):
-        if txBody not in title_tx_bodies:
-            apply_textframe_profile_xml(txBody, is_title=False)
+        # Apply formatting to the text body within the shape
+        txBody = shape.find(".//" + A_NS + "txBody")
+        if txBody is not None:
+            apply_textframe_profile_xml(txBody, is_title=is_title)
+
 def get_formatting_statistics(root) -> dict:
     """
     Analyze formatting consistency across slide.
@@ -223,43 +176,56 @@ def get_formatting_statistics(root) -> dict:
         "line_spacings": []
     }
     
-    for txBody in root.iter(A_NS + "txBody"):
-        stats["text_frames"] += 1
+    for shape in root.iter(P_NS + "sp"):
+        is_title = False
+        nvSpPr = shape.find(".//" + P_NS + "nvSpPr")
+        if nvSpPr is not None:
+            nvPr = nvSpPr.find(P_NS + "nvPr")
+            if nvPr is not None:
+                ph = nvPr.find(P_NS + "ph")
+                if ph is not None and ph.get("type") in ["title", "ctrTitle"]:
+                    is_title = True
+        for txBody in shape.iter(A_NS + "txBody"):
+            stats["text_frames"] += 1
+            if is_title:
+                stats["title_frames"] += 1
+            else:
+                stats["body_frames"] += 1
         
-        # Check body properties
-        bodyPr = txBody.find(A_NS + "bodyPr")
-        if bodyPr is not None:
-            margins = {
-                "left": bodyPr.get("lIns", "default"),
-                "right": bodyPr.get("rIns", "default"), 
-                "top": bodyPr.get("tIns", "default"),
-                "bottom": bodyPr.get("bIns", "default")
-            }
-            stats["margin_settings"].append(margins)
-        
-        # Check paragraph properties
-        for para in txBody.iter(A_NS + "p"):
-            pPr = para.find(A_NS + "pPr")
-            if pPr is not None:
-                lnSpc = pPr.find(A_NS + "lnSpc")
-                if lnSpc is not None:
-                    spcPct = lnSpc.find(A_NS + "spcPct")
-                    if spcPct is not None:
-                        stats["line_spacings"].append(spcPct.get("val", "default"))
+            # Check body properties
+            bodyPr = txBody.find(A_NS + "bodyPr")
+            if bodyPr is not None:
+                margins = {
+                    "left": bodyPr.get("lIns", "default"),
+                    "right": bodyPr.get("rIns", "default"), 
+                    "top": bodyPr.get("tIns", "default"),
+                    "bottom": bodyPr.get("bIns", "default")
+                }
+                stats["margin_settings"].append(margins)
             
-            # Check run properties
-            for run in para.iter(A_NS + "r"):
-                rPr = run.find(A_NS + "rPr")
-                if rPr is not None:
-                    size = rPr.get("sz")
-                    if size:
-                        stats["font_sizes"].append(int(size))
-                    
-                    latin = rPr.find(A_NS + "latin")
-                    if latin is not None:
-                        font_family = latin.get("typeface")
-                        if font_family:
-                            stats["font_families"].add(font_family)
+            # Check paragraph properties
+            for para in txBody.iter(A_NS + "p"):
+                pPr = para.find(A_NS + "pPr")
+                if pPr is not None:
+                    lnSpc = pPr.find(A_NS + "lnSpc")
+                    if lnSpc is not None:
+                        spcPct = lnSpc.find(A_NS + "spcPct")
+                        if spcPct is not None:
+                            stats["line_spacings"].append(spcPct.get("val", "default"))
+                
+                # Check run properties
+                for run in para.iter(A_NS + "r"):
+                    rPr = run.find(A_NS + "rPr")
+                    if rPr is not None:
+                        size = rPr.get("sz")
+                        if size:
+                            stats["font_sizes"].append(int(size))
+                        
+                        latin = rPr.find(A_NS + "latin")
+                        if latin is not None:
+                            font_family = latin.get("typeface")
+                            if font_family:
+                                stats["font_families"].add(font_family)
     
     return stats
 
