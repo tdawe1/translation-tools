@@ -50,6 +50,10 @@ def create_style_checker_prompt_v2(glossary: Optional[Dict[str, str]] = None, de
     
     return f"""You are a style reviewer for marketing slide translations. Review the provided English translations and return ONLY a JSON object with style diagnostics.
 
+Use moderate creativity and variation in your analysis (temperature=0.7). Provide consistent but not overly rigid corrections.
+
+The primary goal is to faithfully convey the tone and intent of the original Japanese text in natural English.
+
 {style_guide}
 {glossary_section}
 {deck_tone_section}
@@ -363,18 +367,24 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Apply title case fixes
     for violation in style_issues.get("title_case_violations", []):
+        if "index" not in violation:
+            continue
         index = violation["index"]
         if 0 <= index < len(fixed) and fixed[index] is not None:
             fixed[index] = violation.get("suggested_fix", fixed[index])
     
     # Fix bullet punctuation
     for violation in style_issues.get("bullet_terminal_punctuation", []):
+        if "index" not in violation:
+            continue
         index = violation["index"] 
         if 0 <= index < len(fixed) and fixed[index] is not None:
             fixed[index] = violation.get("suggested_fix", fixed[index])
     
     # Replace banned phrases
     for violation in style_issues.get("banned_phrases", []):
+        if "index" not in violation or "phrase" not in violation or "suggested" not in violation:
+            continue
         index = violation["index"]
         if 0 <= index < len(fixed) and fixed[index] is not None:
             old_phrase = violation["phrase"]
@@ -388,6 +398,8 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Fix punctuation errors
     for violation in style_issues.get("punctuation_errors", []):
+        if "index" not in violation or "original" not in violation or "correct" not in violation:
+            continue
         index = violation["index"]
         if 0 <= index < len(fixed) and fixed[index] is not None:
             original = violation["original"]
@@ -396,6 +408,8 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Glossary fixes (simple token replacement)
     for violation in style_issues.get("glossary_violations", []):
+        if "index" not in violation or "found" not in violation or "expected" not in violation:
+            continue
         index = violation["index"]
         if 0 <= index < len(fixed) and fixed[index] is not None:
             found_term = violation["found"]
@@ -439,8 +453,7 @@ def model_style_check(client, translations: List[str],
             model="gpt-5",
             reasoning={"effort": "medium"},  # Balanced effort for style analysis
             text={"verbosity": "low"},
-            input=[{"role": "user", "content": [{"type": "input_text", "text": full_prompt}]}],
-            temperature=0.0  # Deterministic for consistent diagnostics
+            input=[{"role": "user", "content": [{"type": "input_text", "text": full_prompt}]}]
         )
         
         content = getattr(response, "output_text", None)
