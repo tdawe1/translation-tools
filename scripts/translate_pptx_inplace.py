@@ -643,7 +643,7 @@ def detect_content_type(para_element) -> str:
     
     return "bullet"  # Default assumption
 
-def apply_style_consistency_workflow(client, translations, original_items, glossary):
+def apply_style_consistency_workflow(client, translations, original_items, glossary, deck_tone):
     """
     Apply comprehensive style consistency workflow:
     1. Style normalization (deterministic)
@@ -655,6 +655,7 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
         translations: List of translated strings
         original_items: Original Japanese strings for context
         glossary: Glossary dict for terminology consistency
+        deck_tone: Deck tone profile
         
     Returns:
         Style-consistent translations
@@ -675,7 +676,7 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
     if enable_style_checking and _use_responses_api(os.getenv("OPENAI_MODEL", "gpt-5")):
         try:
             # Run style diagnostics
-            diagnostics = model_style_check(client, normalized_translations, glossary)
+            diagnostics = model_style_check(client, normalized_translations, glossary, deck_tone)
             
             # Apply authority fixes based on diagnostics
             fixed_translations = apply_style_fixes(normalized_translations, diagnostics)
@@ -687,7 +688,7 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
             return normalized_translations
     else:
         # Fallback to local-only style checking for consistency
-        local_diagnostics = run_style_check(normalized_translations, glossary)
+        local_diagnostics = run_style_check(client, normalized_translations, glossary, deck_tone)
         fixed_translations = apply_style_fixes(normalized_translations, local_diagnostics)
         return fixed_translations
 
@@ -723,6 +724,14 @@ def batch_translate(client, model: str, items, glossary):
         sys_prompt = apply_style_guide_to_prompt(base_prompt)
     else:
         sys_prompt = base_prompt + ("\n" + style_guide if style_guide else "")
+
+    # Add deck tone profile if available
+    deck_tone_path = "deck_tone.json"
+    if os.path.exists(deck_tone_path):
+        with open(deck_tone_path, "r", encoding="utf-8") as f:
+            deck_tone = json.load(f)
+        sys_prompt += "\n\nUse the deck tone profile as a tie-breaker only when the source tone is ambiguous. Otherwise, mirror the source."
+        sys_prompt += f"\nTONE_PROFILE:\n{json.dumps(deck_tone, ensure_ascii=False, indent=2)}"
 
     user_payload = {
         "glossary": glossary or {},
@@ -812,13 +821,27 @@ def batch_translate(client, model: str, items, glossary):
                     if notes.strip():
                         _slide_notes_content[original] = notes
                 
+                # Load deck tone profile
+                deck_tone = None
+                deck_tone_path = "deck_tone.json"
+                if os.path.exists(deck_tone_path):
+                    with open(deck_tone_path, "r", encoding="utf-8") as f:
+                        deck_tone = json.load(f)
+
                 # Apply style consistency workflow
-                final_out = apply_style_consistency_workflow(client, processed_out, items, glossary)
+                final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, deck_tone)
                         
                 return final_out
             else:
+                # Load deck tone profile
+                deck_tone = None
+                deck_tone_path = "deck_tone.json"
+                if os.path.exists(deck_tone_path):
+                    with open(deck_tone_path, "r", encoding="utf-8") as f:
+                        deck_tone = json.load(f)
+
                 # Apply style consistency to simple path too
-                final_out = apply_style_consistency_workflow(client, out, items, glossary)
+                final_out = apply_style_consistency_workflow(client, out, items, glossary, deck_tone)
                 return final_out
             
         # Fallback to simple JSON parsing
