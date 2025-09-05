@@ -20,7 +20,7 @@ from xml.etree import ElementTree as ET
 
 # Import style consistency modules
 try:
-    from style_normalize import normalize_block, get_style_guide, apply_style_guide_to_prompt, detect_content_type
+    from style_normalize import normalize_block, get_style_guide, apply_style_guide_to_prompt, detect_content_type as detect_content_type_text
     from style_checker import model_style_check, apply_style_fixes, run_style_check
     from pptx_format import apply_deck_formatting_profile
     STYLE_MODULES_AVAILABLE = True
