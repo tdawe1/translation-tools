@@ -39,6 +39,12 @@ RX_CODE= re.compile(r"[A-Z]{2,}\d[\w\-]*")
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 
+# Global storage for notes content during processing
+_slide_notes_content = {}
+
+# Global storage for slides needing layout tightening
+_slides_need_tightening = set()
+
 def count_jp_chars(s: str) -> int:
     return len(JP_ANY.findall(s))
 
@@ -204,17 +210,22 @@ def _use_responses_api(model: str) -> bool:
     return m.startswith("gpt-5") or os.getenv("OPENAI_USE_RESPONSES") == "1"
 
 def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    # OpenAI Responses API
+    # OpenAI Responses API with GPT-5 reasoning model
     try:
-        # Support "high thinking" baseline via reasoning.effort
-        effort = os.getenv("OPENAI_REASONING_EFFORT", "high")
+        # Configure reasoning effort based on model - high for main translation, minimal for reviews
+        if model.startswith("gpt-5-mini"):
+            effort = "minimal"  # Fast reviewer
+        else:
+            effort = os.getenv("OPENAI_REASONING_EFFORT", "high")  # Deep thinking for translation
+        
         resp = client.responses.create(
             model=model,
             input=[
-                {"role": "system", "content": [{"type": "output_text", "text": sys_prompt}]},
+                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
                 {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]},
             ],
             reasoning={"effort": effort},
+            text={"verbosity": "low"},  # Concise responses, avoid chatty prose
             temperature=temperature,
             response_format={"type": "json"},
         )
@@ -275,8 +286,9 @@ def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
             pass
 
     preset = (style_preset or "").strip().lower()
+    base_guide = ""
     if preset in {"gengo", "gengo-ja-en", "gengo_ja_en"}:
-        return (
+        base_guide = (
             "Follow these JP→EN style rules (Gengo-inspired):\n"
             "- Tone: Natural, clear business English; avoid overly literal phrasing.\n"
             "- Honorifics: Omit honorifics unless required for meaning.\n"
@@ -291,11 +303,340 @@ def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
             "- Register: Prefer active voice; concise and persuasive B2B tone.\n"
             "- No additions: Do not summarize, omit, or invent content."
         )
-    return ""
+    
+    # Add conciseness rules for expansion management
+    conciseness_rules = (
+        "\n\nCONCISENESS RULES for slide translation:\n"
+        "- Use fragments, not full sentences in bullets\n"
+        "- Remove filler: \"in order to\"→\"to\", \"utilize\"→\"use\", \"as well as\"→\"and\"\n"
+        "- Drop articles where clear: \"the\", \"a\"\n"
+        "- Cut most instances of \"that\"\n"
+        "- Use symbols: \"and\"→\"&\" in labels, \"approximately\"→\"~\", \"versus\"→\"vs.\"\n"
+        "- One verb per bullet; cut adverbs\n"
+        "- Collapse double nouns: \"customer onboarding process\"→\"customer onboarding\"\n"
+        "- Keep parallel structure in bullet lists"
+    )
+    
+    return base_guide + conciseness_rules if base_guide else conciseness_rules
+
+def calculate_expansion_ratio(original_jp: str, translated_en: str) -> float:
+    """Calculate expansion ratio between Japanese and English text."""
+    jp_len = len(original_jp.strip())
+    en_len = len(translated_en.strip())
+    return en_len / jp_len if jp_len > 0 else 1.0
+
+def condense_text_block(client, model: str, text: str, target_ratio: float = 0.85) -> str:
+    """Stage 1: Compress text by removing filler while preserving meaning."""
+    if not text or len(text) < 50:  # Skip very short text
+        return text
+        
+    reduction_pct = int((1 - target_ratio) * 100)
+    prompt = f"""Shorten this English text by ~{reduction_pct}% while preserving all meaning.
+
+REQUIREMENTS:
+- Keep all numbers, URLs, and technical terms exactly as-is
+- Preserve any markup tags or placeholders ⟦…⟧
+- Use concise fragments for bullets, not full sentences
+- Remove filler: "in order to"→"to", "utilize"→"use", "as well as"→"and"
+- Drop unnecessary articles ("the", "a") and instances of "that"
+- One verb per bullet; cut adverbs where possible
+- Maintain professional tone and parallel structure
+- Do NOT change meaning or remove actual content
+
+Text to shorten:
+{text}"""
+
+    try:
+        if _use_responses_api(model):
+            resp = client.responses.create(
+                model=model,
+                reasoning_effort="high",
+                text={"verbosity": "low"}, 
+                input=[{"role": "user", "content": prompt}],
+                response_format={"type": "text"},
+                temperature=0.2,
+            )
+            content = getattr(resp, "output_text", None)
+            if not content and getattr(resp, "output", None):
+                try:
+                    content = resp.output[0].content[0].text
+                except Exception:
+                    pass
+            return content.strip() if content else text
+        else:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            return resp.choices[0].message.content.strip()
+    except Exception:
+        return text  # Fallback to original if compression fails
+
+def spill_to_notes(text_block: str, content_type: str = "bullet") -> tuple[str, str]:
+    """Stage 2: Move overflow content to Notes with reference stub."""
+    import re
+    
+    if content_type == "title":
+        # For titles, just truncate at reasonable length and add ellipsis
+        if len(text_block) > 80:  # Conservative title length
+            words = text_block.split()
+            truncated = []
+            char_count = 0
+            for word in words:
+                if char_count + len(word) + 1 > 75:  # Leave room for ellipsis
+                    break
+                truncated.append(word)
+                char_count += len(word) + 1
+            
+            stub_text = " ".join(truncated) + "..."
+            spilled_content = f"Full title: {text_block}"
+            return stub_text, spilled_content
+    
+    elif content_type == "bullet":
+        # Split bullets at sentence boundaries or logical breaks
+        sentences = re.split(r'(?<=[.!?;])\s+', text_block)
+        if len(sentences) <= 1:
+            # Single sentence - try to split at conjunctions or commas
+            parts = re.split(r'\s*(?:,\s*(?:and|but|or)|;\s*)\s*', text_block)
+            if len(parts) > 1:
+                stub_text = parts[0] + " (detail → Notes)"
+                spilled_content = f"Additional details: {' '.join(parts[1:])}"
+                return stub_text, spilled_content
+            else:
+                # Last resort: split at halfway point on word boundary
+                words = text_block.split()
+                split_point = len(words) // 2
+                stub_text = " ".join(words[:split_point]) + " (more → Notes)"
+                spilled_content = f"Continued: {' '.join(words[split_point:])}"
+                return stub_text, spilled_content
+        else:
+            # Multiple sentences - keep first, spill rest
+            stub_text = sentences[0] + " (detail → Notes)"
+            spilled_content = f"Additional details: {' '.join(sentences[1:])}"
+            return stub_text, spilled_content
+    
+    elif content_type == "table":
+        # For table cells, aggressive abbreviation + Notes reference
+        words = text_block.split()
+        if len(words) > 5:
+            stub_text = " ".join(words[:3]) + "... (Notes)"
+            spilled_content = f"Full content: {text_block}"
+            return stub_text, spilled_content
+    
+    # Default fallback
+    words = text_block.split()
+    if len(words) > 8:
+        stub_text = " ".join(words[:6]) + " (→Notes)"
+        spilled_content = f"Complete text: {text_block}"
+        return stub_text, spilled_content
+    
+    return text_block, ""  # No spill needed
+
+def verify_content_integrity(original_jp: str, stub_en: str, notes_en: str, glossary: dict) -> bool:
+    """Reviewer function: verify no numbers/URLs/glossary terms lost in split."""
+    combined_en = stub_en + " " + notes_en
+    
+    # Check for numbers (including Japanese numerals and percentages)
+    import re
+    jp_numbers = re.findall(r'\d+(?:[,.]?\d+)*[%％]?', original_jp)
+    en_numbers = re.findall(r'\d+(?:[,.]?\d+)*[%％]?', combined_en)
+    
+    if len(jp_numbers) != len(en_numbers):
+        return False
+    
+    # Check URLs
+    jp_urls = re.findall(r'https?://\S+|www\.\S+', original_jp)  
+    en_urls = re.findall(r'https?://\S+|www\.\S+', combined_en)
+    
+    if len(jp_urls) != len(en_urls):
+        return False
+    
+    # Check glossary terms are preserved
+    for jp_term, en_term in glossary.items():
+        if jp_term in original_jp and en_term not in combined_en:
+            return False
+    
+    return True
+
+def add_notes_to_slide(zout: zipfile.ZipFile, slide_name: str, notes_content: list[str]) -> None:
+    """Add or update slide notes with spilled content."""
+    if not any(notes_content):  # No notes to add
+        return
+        
+    # Generate notes slide XML filename 
+    slide_num = slide_name.split("slide")[1].split(".xml")[0]
+    notes_name = f"ppt/notesSlides/notesSlide{slide_num}.xml"
+    
+    # Combine all non-empty notes content
+    combined_notes = "\n\n".join(note for note in notes_content if note.strip())
+    if not combined_notes.strip():
+        return
+    
+    # Create basic notes slide XML structure
+    notes_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" 
+         xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" 
+         xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+    <p:cSld>
+        <p:spTree>
+            <p:nvGrpSpPr>
+                <p:cNvPr id="1" name=""/>
+                <p:cNvGrpSpPr/>
+                <p:nvPr/>
+            </p:nvGrpSpPr>
+            <p:grpSpPr>
+                <a:xfrm>
+                    <a:off x="0" y="0"/>
+                    <a:ext cx="0" cy="0"/>
+                    <a:chOff x="0" y="0"/>
+                    <a:chExt cx="0" cy="0"/>
+                </a:xfrm>
+            </p:grpSpPr>
+            <p:sp>
+                <p:nvSpPr>
+                    <p:cNvPr id="2" name="Notes Placeholder"/>
+                    <p:cNvSpPr>
+                        <a:spLocks noGrp="1"/>
+                    </p:cNvSpPr>
+                    <p:nvPr>
+                        <p:ph type="body" idx="1"/>
+                    </p:nvPr>
+                </p:nvSpPr>
+                <p:spPr/>
+                <p:txBody>
+                    <a:bodyPr/>
+                    <a:lstStyle/>
+                    <a:p>
+                        <a:r>
+                            <a:rPr lang="en-US"/>
+                            <a:t>{combined_notes}</a:t>
+                        </a:r>
+                    </a:p>
+                </p:txBody>
+            </p:sp>
+        </p:spTree>
+    </p:cSld>
+</p:notes>"""
+    
+    try:
+        # Add notes slide to zip
+        zout.writestr(notes_name, notes_xml.encode('utf-8'))
+    except Exception:
+        # If notes creation fails, continue without notes
+        pass
+
+def apply_layout_tightening(root, is_aggressive: bool = False):
+    """Stage 3: Apply layout optimizations to buy space."""
+    import xml.etree.ElementTree as ET
+    
+    # Find all text bodies and apply tightening
+    for txBody in root.iter(A_NS + "txBody"):
+        # Ensure autofit is enabled (shrink-to-fit)
+        bodyPr = txBody.find(A_NS + "bodyPr")
+        if bodyPr is None:
+            bodyPr = ET.SubElement(txBody, A_NS + "bodyPr")
+        
+        # Set autofit with minimum font size guards
+        if bodyPr.find(A_NS + "normAutofit") is None and bodyPr.find(A_NS + "spAutoFit") is None:
+            normAutofit = ET.SubElement(bodyPr, A_NS + "normAutofit")
+            # Set font scale limits to prevent text from becoming unreadable
+            normAutofit.set("fontScale", "85000")  # Minimum 85% font scaling
+            normAutofit.set("lnSpcReduction", "15000")  # Maximum 15% line spacing reduction
+        
+        # Tighten margins
+        bodyPr.set("lIns", "36000")   # Left margin: 2pt (was default ~7pt)
+        bodyPr.set("rIns", "36000")   # Right margin: 2pt  
+        bodyPr.set("tIns", "18000")   # Top margin: 1pt (was default ~5pt)
+        bodyPr.set("bIns", "18000")   # Bottom margin: 1pt
+        bodyPr.set("wrap", "square")  # Ensure text wrapping
+        
+        # Apply paragraph-level optimizations
+        for p in txBody.iter(A_NS + "p"):
+            pPr = p.find(A_NS + "pPr")
+            if pPr is None:
+                pPr = ET.SubElement(p, A_NS + "pPr")
+            
+            # Tighten line spacing
+            lnSpc = pPr.find(A_NS + "lnSpc")
+            if lnSpc is None:
+                lnSpc = ET.SubElement(pPr, A_NS + "lnSpc")
+            spcPct = lnSpc.find(A_NS + "spcPct")
+            if spcPct is None:
+                spcPct = ET.SubElement(lnSpc, A_NS + "spcPct")
+            spcPct.set("val", "110000")  # 110% line spacing (was default ~120%)
+            
+            # Remove extra spacing before/after paragraphs
+            spcBef = pPr.find(A_NS + "spcBef")
+            if spcBef is not None:
+                pPr.remove(spcBef)
+            spcAft = pPr.find(A_NS + "spcAft")  
+            if spcAft is not None:
+                pPr.remove(spcAft)
+            
+            # Optimize bullet indents
+            lvl = int(pPr.get("lvl", "0"))
+            if lvl > 0:
+                # Tighten bullet indentation
+                if lvl == 1:
+                    pPr.set("marL", "228600")    # 0.32" left margin (was ~0.5")
+                    pPr.set("indent", "-228600") # Hanging indent to align text
+                elif lvl == 2:
+                    pPr.set("marL", "457200")    # 0.64" left margin
+                    pPr.set("indent", "-228600")
+                else:
+                    pPr.set("marL", str(228600 * (lvl + 1)))
+                    pPr.set("indent", "-228600")
+            
+            # Apply font size guards to prevent unreadable text
+            for r in p.iter(A_NS + "r"):
+                rPr = r.find(A_NS + "rPr")
+                if rPr is not None:
+                    # Check if font size is specified
+                    sz = rPr.get("sz")
+                    if sz:
+                        font_size = int(sz)
+                        # Determine if this is likely a title based on context or size
+                        is_title = font_size > 2800 or "title" in (p.get("class", "")).lower()
+                        
+                        # Set minimum font sizes
+                        min_size = 1800 if is_title else 1100  # 18pt for titles, 11pt for body
+                        if font_size < min_size:
+                            rPr.set("sz", str(min_size))
+
+def detect_content_type(para_element) -> str:
+    """Detect if paragraph is title, bullet, or table content."""
+    # Check parent elements and attributes for context
+    parent = para_element.getparent() if hasattr(para_element, 'getparent') else None
+    
+    # Look for title indicators in parent shape properties  
+    current = para_element
+    while current is not None:
+        if current.tag and "title" in current.tag.lower():
+            return "title"
+        if hasattr(current, 'getparent'):
+            current = current.getparent()
+        else:
+            break
+    
+    # Check for bullet/list indicators
+    pPr = para_element.find(A_NS + "pPr")
+    if pPr is not None:
+        if pPr.find(A_NS + "buChar") is not None or pPr.find(A_NS + "buAutoNum") is not None:
+            return "bullet"
+        if pPr.get("lvl") is not None and int(pPr.get("lvl", "0")) > 0:
+            return "bullet"
+    
+    # Check for table context (simplified detection)
+    if any("table" in str(elem.tag).lower() for elem in para_element.iter()):
+        return "table"
+    
+    return "bullet"  # Default assumption
 
 def batch_translate(client, model: str, items, glossary):
     """Translate list of strings JA->EN. Returns list of translations in order.
-    Uses Responses API for gpt-5 models; falls back to Chat Completions otherwise.
+    Uses GPT-5 reasoning model with deep thinking for best fidelity.
+    Falls back to Chat Completions for non-GPT-5 models.
     Expects a strict JSON array output.
     """
     # Apply masking to protect fragile content
@@ -307,6 +648,7 @@ def batch_translate(client, model: str, items, glossary):
     )
     sys_prompt = (
         "You are a professional Japanese-to-English translator for B2B marketing decks. "
+        "Think carefully about context, nuance, and business terminology before translating. "
         "Translate faithfully and naturally; keep the meaning and tone persuasive yet neutral. "
         "Do NOT summarize or add content. Preserve line breaks. "
         "Keep numbers, URLs, and variable-like tokens intact. "
@@ -328,9 +670,9 @@ def batch_translate(client, model: str, items, glossary):
     use_responses = _use_responses_api(model)
     # Allow temperature override
     try:
-        temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
+        temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.6"))
     except Exception:
-        temperature = 0.2
+        temperature = 0.6
 
     for attempt in range(3):
         try:
@@ -348,14 +690,118 @@ def batch_translate(client, model: str, items, glossary):
         if data:
             # Unmask fragile content in results
             out = [unmask_fragile(str(y), maps[i]) for i, y in enumerate(data)]
-            return out
+            
+            # Apply expansion policy if text is too long
+            if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
+                processed_out = []
+                notes_content = []
+                
+                for i, (original, translated) in enumerate(zip(items, out)):
+                    expansion_ratio = calculate_expansion_ratio(original, translated)
+                    content_type = "bullet"  # Default; could be enhanced to detect titles/tables
+                    
+                    # Define thresholds by content type
+                    threshold = 1.8 if "title" in original.lower() else (1.2 if "table" in original.lower() else 1.4)
+                    
+                    if expansion_ratio > threshold:
+                        # Stage 1: Try compression first
+                        condensed = condense_text_block(client, model, translated, target_ratio=0.85)
+                        new_ratio = calculate_expansion_ratio(original, condensed)
+                        
+                        if new_ratio > threshold:
+                            # Stage 2: Spill to Notes
+                            stub_text, spilled_content = spill_to_notes(condensed, content_type)
+                            
+                            # Verify content integrity
+                            if verify_content_integrity(original, stub_text, spilled_content, glossary or {}):
+                                processed_out.append(stub_text)
+                                notes_content.append(spilled_content)
+                                # Still might need tightening
+                                final_ratio = calculate_expansion_ratio(original, stub_text)
+                                if final_ratio > (threshold * 0.9):  # Still close to threshold
+                                    _slides_need_tightening.add(original)
+                            else:
+                                # Integrity check failed, use condensed version without spill
+                                processed_out.append(condensed)
+                                notes_content.append("")
+                                # Definitely need tightening since spill failed
+                                _slides_need_tightening.add(original)
+                        else:
+                            # Compression worked, check if still needs tightening
+                            processed_out.append(condensed)
+                            notes_content.append("")
+                            if new_ratio > (threshold * 0.85):  # Still somewhat long
+                                _slides_need_tightening.add(original)
+                    else:
+                        # Check if borderline case that could benefit from tightening
+                        if expansion_ratio > (threshold * 0.8):  # Within 20% of threshold
+                            _slides_need_tightening.add(original)
+                        processed_out.append(translated)
+                        notes_content.append("")
+                
+                # Store notes content globally for PPTX write-back
+                # Map original text to notes content for lookup during processing
+                global _slide_notes_content
+                for original, notes in zip(items, notes_content):
+                    if notes.strip():
+                        _slide_notes_content[original] = notes
+                        
+                return processed_out
+            else:
+                return out
             
         # Fallback to simple JSON parsing
         try:
             data = json.loads(content)
             if isinstance(data, list) and len(data) == len(items):
                 out = [unmask_fragile(str(y), maps[i]) for i, y in enumerate(data)]
-                return out
+                
+                # Apply expansion policy for fallback path too
+                if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
+                    processed_out = []
+                    notes_content = []
+                    
+                    for i, (original, translated) in enumerate(zip(items, out)):
+                        expansion_ratio = calculate_expansion_ratio(original, translated)
+                        content_type = "bullet"
+                        threshold = 1.8 if "title" in original.lower() else (1.2 if "table" in original.lower() else 1.4)
+                        
+                        if expansion_ratio > threshold:
+                            condensed = condense_text_block(client, model, translated, target_ratio=0.85)
+                            new_ratio = calculate_expansion_ratio(original, condensed)
+                            
+                            if new_ratio > threshold:
+                                stub_text, spilled_content = spill_to_notes(condensed, content_type)
+                                if verify_content_integrity(original, stub_text, spilled_content, glossary or {}):
+                                    processed_out.append(stub_text)
+                                    notes_content.append(spilled_content)
+                                    final_ratio = calculate_expansion_ratio(original, stub_text)
+                                    if final_ratio > (threshold * 0.9):
+                                        _slides_need_tightening.add(original)
+                                else:
+                                    processed_out.append(condensed)
+                                    notes_content.append("")
+                                    _slides_need_tightening.add(original)
+                            else:
+                                processed_out.append(condensed)
+                                notes_content.append("")
+                                if new_ratio > (threshold * 0.85):
+                                    _slides_need_tightening.add(original)
+                        else:
+                            if expansion_ratio > (threshold * 0.8):
+                                _slides_need_tightening.add(original)
+                            processed_out.append(translated)
+                            notes_content.append("")
+                    
+                    # Store notes content globally
+                    global _slide_notes_content
+                    for original, notes in zip(items, notes_content):
+                        if notes.strip():
+                            _slide_notes_content[original] = notes
+                    
+                    return processed_out
+                else:
+                    return out
         except Exception:
             # Not valid JSON array; retry
             time.sleep(1 + attempt)
@@ -464,8 +910,23 @@ def main():
                             set_para_text(p, tgt)
                             changed = True
                 if changed:
+                    # Apply Stage 3: Layout tightening for slides marked as needing it
+                    if name in _slides_need_tightening:
+                        apply_layout_tightening(root)
+                    
                     _ensure_autofit(root)
                     data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                    
+                    # Process notes content for this slide
+                    slide_notes = []
+                    for p in root.iter(A_NS + "p"):
+                        orig_text = normalize_para_text(p)
+                        if orig_text in _slide_notes_content:
+                            slide_notes.append(_slide_notes_content[orig_text])
+                    
+                    # Add notes to slide if any content was spilled
+                    if slide_notes:
+                        add_notes_to_slide(zout, name, slide_notes)
 
                 # Recalc after
                 root2 = ET.fromstring(data)
