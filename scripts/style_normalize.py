@@ -36,10 +36,14 @@ BANNED_PHRASES = {
 
 def collapse_whitespace(s: str) -> str:
     """Normalize all whitespace to single spaces and trim."""
+    if not s:
+        return s or ""
     return re.sub(r"\s+", " ", s).strip()
 
 def normalize_punctuation(s: str) -> str:
     """Convert Japanese punctuation and fix common spacing issues."""
+    if not s:
+        return s or ""
     # Apply Japanese punctuation mapping
     s = s.translate(JP_PUNCT_MAP)
     
@@ -59,6 +63,8 @@ def normalize_punctuation(s: str) -> str:
 
 def title_case(s: str) -> str:
     """Apply Title Case following standard rules for marketing materials."""
+    if not s:
+        return s or ""
     words = s.split()
     if not words:
         return s
@@ -85,6 +91,8 @@ def title_case(s: str) -> str:
     return " ".join(result)
 def bullet_fragment(s: str) -> str:
     """Convert to bullet fragment: remove terminal punctuation, keep capitalization."""
+    if not s:
+        return s or ""
     s = s.strip()
     
     # Remove terminal punctuation (period, semicolon, colon) but preserve if multiple sentences
@@ -116,6 +124,10 @@ def replace_banned_phrases(s: str) -> str:
 
 def detect_content_type(tagged_text: str, context_hints: dict = None) -> str:
     """Detect content type from text and context hints."""
+    # Handle None input
+    if not tagged_text:
+        return "bullet"
+        
     if context_hints:
         if context_hints.get("is_title", False):
             return "title"
@@ -148,8 +160,9 @@ def normalize_block(tagged_en: str, content_type: str = None, context_hints: dic
     Returns:
         Normalized text with consistent style and formatting
     """
-    if not tagged_en.strip():
-        return tagged_en
+    # Handle None input
+    if not tagged_en or not tagged_en.strip():
+        return tagged_en or ""
     
     # Detect content type if not provided
     if content_type is None:
