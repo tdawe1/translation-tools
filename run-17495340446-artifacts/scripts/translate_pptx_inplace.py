@@ -32,7 +32,7 @@ FULLWIDTH = r'\uff00-\uffef'
 JP_ANY = re.compile(f'[{JP_CORE}{CJK_PUNCT}{FULLWIDTH}]')
 
 # Masking patterns for fragile content
-RX_NUM = re.compile(r"\d[\d,.\-–%]*")
+RX_NUM = re.compile(r"\d[\d,.\-\u2013%]*")
 RX_URL = re.compile(r"https?://\S+|www\.\S+")
 RX_CODE= re.compile(r"[A-Z]{2,}\d[\w\-]*")
 
@@ -104,7 +104,6 @@ def set_para_text(p_el, new_text: str):
     lines = new_text.split("\n")
 
     # Tokenize by words but keep whitespace separators so we can reassemble cleanly
-    import re
     def tokenize(s):
         return re.findall(r'\S+|\s+', s)
 
@@ -207,7 +206,7 @@ def set_para_text(p_el, new_text: str):
                 first_run_idx = list(parent).index(runs[0])
                 parent.insert(first_run_idx + 1, br)
 
-def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set = None):
+def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set | None = None):
     """Return a flat list of (slide_name, paragraph_index, text)."""
     paras = []
     slide_files = sorted([n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")])
@@ -410,7 +409,7 @@ def batch_translate(client, model: str, items, glossary):
                 content = _responses_create(client, model, sys_prompt, user_payload, temperature)
             else:
                 content = _chat_create(client, model, sys_prompt, user_payload, temperature)
-        except Exception as e:
+        except Exception:
             # Backoff and retry on transient errors
             time.sleep(1 + attempt)
             continue
