@@ -8,6 +8,11 @@ JA -> EN PowerPoint translator that replaces text in the original file while pre
 - Caches translations (JSON sidecar) to avoid rework/re-costs.
 - Emits a bilingual CSV for QA and a JSON audit report (remaining JP counts, etc.).
 
+Enhancements (opt-in via env):
+- USE_TAGS=1 — preserve inline formatting via lightweight tags [b] [i] [u] [sup] [sub].
+- USE_PLACEHOLDERS=1 — lock numbers/URLs/IDs with ⟦…⟧ placeholders.
+- ENABLE_AUTOFIT=1 — enable shrink-to-fit on text bodies to reduce overlaps.
+
 Usage:
   python translate_pptx_inplace.py --in input.pptx --out output_en.pptx \
     --model gpt-4o --batch 40 --glossary glossary.json
@@ -57,6 +62,92 @@ def normalize_para_text(p_el):
 
     return "".join(parts)
 
+# ---- Inline formatting tags support ----
+def extract_run_style(r_el):
+    rpr = r_el.find(A_NS + "rPr")
+    if rpr is None:
+        return {}
+    sty = {}
+    if rpr.get("b") in ("1", "true"):
+        sty["b"] = True
+    if rpr.get("i") in ("1", "true"):
+        sty["i"] = True
+    if rpr.get("u") and rpr.get("u") != "none":
+        sty["u"] = True
+    base = rpr.get("baseline")
+    if base:
+        try:
+            val = int(base)
+            if val > 0:
+                sty["sup"] = True
+            elif val < 0:
+                sty["sub"] = True
+        except Exception:
+            pass
+    return sty
+
+def style_open_tags(sty):
+    s = ""
+    if sty.get("b"): s += "[b]"
+    if sty.get("i"): s += "[i]"
+    if sty.get("u"): s += "[u]"
+    if sty.get("sup"): s += "[sup]"
+    if sty.get("sub"): s += "[sub]"
+    return s
+
+def style_close_tags(sty):
+    s = ""
+    if sty.get("sub"): s += "[/sub]"
+    if sty.get("sup"): s += "[/sup]"
+    if sty.get("u"): s += "[/u]"
+    if sty.get("i"): s += "[/i]"
+    if sty.get("b"): s += "[/b]"
+    return s
+
+def tagged_para_text(p_el):
+    parts = []
+    for node in p_el:
+        if node.tag == A_NS + "r":
+            t = node.find(A_NS + "t")
+            txt = "" if t is None or t.text is None else t.text
+            if not txt:
+                continue
+            sty = extract_run_style(node)
+            parts.append(style_open_tags(sty) + txt + style_close_tags(sty))
+        elif node.tag == A_NS + "br":
+            parts.append("\n")
+        else:
+            t = node.find(f".//{A_NS}t")
+            if t is not None and t.text:
+                parts.append(t.text)
+    return "".join(parts)
+
+# ---- Placeholder masking ----
+NUM_RE = re.compile(r"(?<!\w)(?:\d[\d,\.\-–%]*|\d{4})")
+URL_RE = re.compile(r"https?://[^\s]+|\b[\w.%-]+@[\w.-]+\.[A-Za-z]{2,}\b")
+CODE_RE = re.compile(r"\b[A-Z]{2,}[A-Z0-9\-_.]*\d+[A-Z0-9\-_.]*\b")
+
+def mask_placeholders(s: str):
+    mapping = {}
+    ctr = {"NUM":0, "URL":0, "CODE":0}
+    def repl(pattern, kind, text):
+        def _r(m):
+            ctr[kind]+=1
+            key=f"⟦{kind}_{ctr[kind]}⟧"
+            mapping[key]=m.group(0)
+            return key
+        return pattern.sub(_r, text)
+    out = s
+    out = repl(URL_RE, "URL", out)
+    out = repl(NUM_RE, "NUM", out)
+    out = repl(CODE_RE, "CODE", out)
+    return out, mapping
+
+def unmask_placeholders(s: str, mapping: dict):
+    for k,v in mapping.items():
+        s = s.replace(k, v)
+    return s
+
 def set_para_text(p_el, new_text: str):
     """Replace paragraph text while preserving number of runs (rough distribution).
     """
@@ -96,8 +187,61 @@ def set_para_text(p_el, new_text: str):
         if t is not None:
             t.text = ""
 
+def set_para_text_tagged(p_el, tagged_text: str):
+    """Replace paragraph content from tagged text, reconstructing runs for b/i/u/sup/sub.
+    Tags: [b] [/b] [i] [/i] [u] [/u] [sup] [/sup] [sub] [/sub]
+    """
+    # Remove existing runs and line breaks
+    for child in list(p_el):
+        if child.tag in (A_NS+"r", A_NS+"br"):
+            p_el.remove(child)
+
+    # Parse simple tags
+    segments = []  # list of (set(styles), text)
+    stack = []
+    buf = []
+    s = tagged_text
+    i = 0
+    def flush():
+        if buf:
+            segments.append((set(stack), ''.join(buf)))
+            buf.clear()
+    while i < len(s):
+        if s[i] == '[':
+            j = s.find(']', i)
+            if j != -1:
+                tag = s[i+1:j]
+                if tag in ("b","i","u","sup","sub"):
+                    flush(); stack.append(tag); i = j+1; continue
+                if tag in ("/b","/i","/u","/sup","/sub"):
+                    flush(); tname = tag[1:]
+                    for k in range(len(stack)-1, -1, -1):
+                        if stack[k]==tname:
+                            del stack[k]; break
+                    i = j+1; continue
+        buf.append(s[i]); i+=1
+    flush()
+
+    # Rebuild runs according to segments
+    for styles, text in segments:
+        if not text:
+            continue
+        r = ET.SubElement(p_el, A_NS+"r")
+        rpr = ET.SubElement(r, A_NS+"rPr")
+        if "b" in styles: rpr.set("b","1")
+        if "i" in styles: rpr.set("i","1")
+        if "u" in styles: rpr.set("u","sng")
+        if "sup" in styles: rpr.set("baseline","30000")
+        if "sub" in styles: rpr.set("baseline","-25000")
+        t = ET.SubElement(r, A_NS+"t")
+        if text and (text[0].isspace() or text.endswith(' ')):
+            t.set("xml:space","preserve")
+        t.text = text
+
 def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set = None):
-    """Return a flat list of (slide_name, paragraph_index, text)."""
+    """Return a flat list of (slide_name, paragraph_index, text).
+    If USE_TAGS=1, paragraph text includes inline tags.
+    """
     paras = []
     slide_files = sorted([n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")])
 
@@ -112,7 +256,7 @@ def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set = None):
     for sf in slide_files:
         root = ET.fromstring(z.read(sf))
         for idx, p_el in enumerate(root.iter(A_NS + "p")):
-            text = normalize_para_text(p_el)
+            text = tagged_para_text(p_el) if os.getenv("USE_TAGS") == "1" else normalize_para_text(p_el)
             if text.strip():
                 paras.append((sf, idx, text))
     return paras, slide_files
@@ -201,11 +345,12 @@ def batch_translate(client, model: str, items, glossary):
         os.getenv("STYLE_PRESET", ""), os.getenv("STYLE_GUIDE_FILE")
     )
     sys_prompt = (
-        "You are a professional Japanese-to-English translator for B2B marketing decks. "
-        "Translate faithfully and naturally; keep the meaning and tone persuasive yet neutral. "
-        "Do NOT summarize or add content. Preserve line breaks. "
+        "You are translating Japanese slide content to clear US-English for business decks. "
+        "Translate faithfully and naturally. Do NOT add or remove content. Preserve line breaks. "
+        "If inline tags like [b] [i] [u] [sup] [sub] or [li-lN]…[/li] are present, preserve them exactly. "
+        "If placeholders like ⟦NUM_1⟧ ⟦URL_2⟧ ⟦CODE_3⟧ are present, preserve them exactly. "
         "Keep numbers, URLs, and variable-like tokens intact. "
-        "Use sentence case for sentences; Title Case for slide titles where appropriate. "
+        "Use sentence case for body; Title Case for slide titles when appropriate. "
         "Respect the glossary exactly when terms occur. "
         + ("\n" + style_guide if style_guide else "")
     )
@@ -215,6 +360,7 @@ def batch_translate(client, model: str, items, glossary):
         "strings": items,
         "instructions": [
             "Return ONLY a JSON array of translated strings in the same order.",
+            "Do not alter tag markers or placeholders; keep them exactly as provided.",
             "No code fences, no commentary."
         ],
     }
@@ -292,10 +438,26 @@ def main():
     with zipfile.ZipFile(args.inp, "r") as zin:
         paras, slide_files = extract_all_paragraphs(zin, slide_range)
 
-    src_strings = [t for _, _, t in paras if JP_ANY.search(t)]
+    use_placeholders = os.getenv("USE_PLACEHOLDERS") == "1"
+
+    # Prepare list of source strings (possibly masked)
+    masks = {}
+    src_strings = []
+    for _, _, t in paras:
+        if JP_ANY.search(t):
+            if use_placeholders:
+                masked, mp = mask_placeholders(t)
+                masks[masked] = mp
+                src_strings.append(masked)
+            else:
+                src_strings.append(t)
+
     uniq = list(dict.fromkeys(src_strings))
-    # Treat identity-mapped entries as missing to avoid caching failures where source == target
-    missing = [s for s in uniq if s not in cache or cache.get(s) == s]
+    # Treat identity-mapped or JP-like cached entries as missing to avoid caching failures
+    missing = [
+        s for s in uniq
+        if s not in cache or cache.get(s) == s or (cache.get(s) and count_jp_chars(cache.get(s)) > 0)
+    ]
 
     i = 0
     calls = 0
@@ -304,6 +466,8 @@ def main():
         out = batch_translate(client, args.model, batch, glossary)
         calls += 1
         for s, t in zip(batch, out):
+            if use_placeholders and s in masks:
+                t = unmask_placeholders(t, masks[s])
             cache[s] = t
         i += args.batch
 
@@ -316,7 +480,10 @@ def main():
         w = csv.writer(f)
         w.writerow(["Japanese", "English"])
         for s in uniq:
-            w.writerow([s, cache.get(s, s)])
+            src_disp = s
+            if use_placeholders and s in masks:
+                src_disp = unmask_placeholders(s, masks[s])
+            w.writerow([src_disp, cache.get(s, src_disp)])
 
     # Write output PPTX
     tmp = args.outp + ".tmp"
@@ -327,6 +494,8 @@ def main():
     per_before = {}
     per_after = {}
 
+    enable_autofit = os.getenv("ENABLE_AUTOFIT") == "1"
+    use_tags = os.getenv("USE_TAGS") == "1"
     with zipfile.ZipFile(args.inp, "r") as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
         for name in zin.namelist():
             data = zin.read(name)
@@ -334,19 +503,33 @@ def main():
                 root = ET.fromstring(data)
                 texts = []
                 for p in root.iter(A_NS + "p"):
-                    t = normalize_para_text(p)
+                    t = tagged_para_text(p) if use_tags else normalize_para_text(p)
                     texts.append(t)
                 per_before[name] = sum(count_jp_chars(t) for t in texts)
                 before_total += per_before[name]
 
                 changed = False
                 for p in root.iter(A_NS + "p"):
-                    src_text = normalize_para_text(p)
+                    src_text = tagged_para_text(p) if use_tags else normalize_para_text(p)
                     if src_text.strip() and JP_ANY.search(src_text):
-                        tgt = cache.get(src_text)
+                        key = src_text
+                        if use_placeholders:
+                            key, _ = mask_placeholders(src_text)
+                        tgt = cache.get(key)
                         if tgt:
-                            set_para_text(p, tgt)
+                            if use_tags:
+                                set_para_text_tagged(p, tgt)
+                            else:
+                                set_para_text(p, tgt)
                             changed = True
+                # Optionally enable shrink-to-fit on text bodies
+                if enable_autofit:
+                    for tx in root.findall(f".//{A_NS}txBody"):
+                        bodyPr = tx.find(A_NS+"bodyPr")
+                        if bodyPr is None:
+                            bodyPr = ET.SubElement(tx, A_NS+"bodyPr")
+                        if bodyPr.find(A_NS+"normAutofit") is None:
+                            ET.SubElement(bodyPr, A_NS+"normAutofit")
                 if changed:
                     data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
@@ -354,7 +537,7 @@ def main():
                 root2 = ET.fromstring(data)
                 txt2 = []
                 for p in root2.iter(A_NS + "p"):
-                    t = normalize_para_text(p)
+                    t = tagged_para_text(p) if use_tags else normalize_para_text(p)
                     txt2.append(t)
                 per_after[name] = sum(count_jp_chars(t) for t in txt2)
                 after_total += per_after[name]
