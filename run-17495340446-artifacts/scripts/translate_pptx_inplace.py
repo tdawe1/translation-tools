@@ -204,10 +204,14 @@ def _use_responses_api(model: str) -> bool:
     return m.startswith("gpt-5") or os.getenv("OPENAI_USE_RESPONSES") == "1"
 
 def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    # OpenAI Responses API
+    # OpenAI Responses API with GPT-5 reasoning model
     try:
-        # Support "high thinking" baseline via reasoning.effort
-        effort = os.getenv("OPENAI_REASONING_EFFORT", "high")
+        # Configure reasoning effort based on model - high for main translation, minimal for reviews
+        if model.startswith("gpt-5-mini"):
+            effort = "minimal"  # Fast reviewer
+        else:
+            effort = os.getenv("OPENAI_REASONING_EFFORT", "high")  # Deep thinking for translation
+        
         resp = client.responses.create(
             model=model,
             input=[
@@ -215,6 +219,7 @@ def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, t
                 {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]},
             ],
             reasoning={"effort": effort},
+            verbosity="low",  # Concise responses, avoid chatty prose
             temperature=temperature,
             response_format={"type": "json"},
         )
@@ -295,7 +300,8 @@ def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
 
 def batch_translate(client, model: str, items, glossary):
     """Translate list of strings JA->EN. Returns list of translations in order.
-    Uses Responses API for gpt-5 models; falls back to Chat Completions otherwise.
+    Uses GPT-5 reasoning model with deep thinking for best fidelity.
+    Falls back to Chat Completions for non-GPT-5 models.
     Expects a strict JSON array output.
     """
     # Apply masking to protect fragile content
@@ -307,6 +313,7 @@ def batch_translate(client, model: str, items, glossary):
     )
     sys_prompt = (
         "You are a professional Japanese-to-English translator for B2B marketing decks. "
+        "Think carefully about context, nuance, and business terminology before translating. "
         "Translate faithfully and naturally; keep the meaning and tone persuasive yet neutral. "
         "Do NOT summarize or add content. Preserve line breaks. "
         "Keep numbers, URLs, and variable-like tokens intact. "
@@ -328,9 +335,9 @@ def batch_translate(client, model: str, items, glossary):
     use_responses = _use_responses_api(model)
     # Allow temperature override
     try:
-        temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
+        temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.6"))
     except Exception:
-        temperature = 0.2
+        temperature = 0.6
 
     for attempt in range(3):
         try:
