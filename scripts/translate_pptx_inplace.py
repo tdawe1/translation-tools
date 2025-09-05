@@ -911,7 +911,7 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
                         deck_tone = json.load(f)
 
                 # Apply style consistency workflow
-                final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, deck_tone, args.offline)
+                final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, deck_tone, offline_mode)
                         
                 return final_out
             else:
@@ -923,7 +923,7 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
                         deck_tone = json.load(f)
 
                 # Apply style consistency to simple path too
-                final_out = apply_style_consistency_workflow(client, out, items, glossary, deck_tone, args.offline)
+                final_out = apply_style_consistency_workflow(client, out, items, glossary, deck_tone, offline_mode)
                 return final_out
             
         # Fallback to simple JSON parsing
@@ -975,12 +975,12 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
                             _slide_notes_content[original] = notes
                     
                     # Apply style consistency workflow
-                    final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, None, args.offline)
+                    final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, None, offline_mode)
                     
                     return final_out
                 else:
                     # Apply style consistency to fallback path
-                    final_out = apply_style_consistency_workflow(client, out, items, glossary, None, args.offline)
+                    final_out = apply_style_consistency_workflow(client, out, items, glossary, None, offline_mode)
                     return final_out
         except Exception:
             # Not valid JSON array; retry
