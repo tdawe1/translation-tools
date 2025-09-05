@@ -26,16 +26,36 @@ Env:
 import argparse, json, os, re, shutil, sys, time, zipfile, logging
 from xml.etree import ElementTree as ET
 from pathlib import Path
+from datetime import datetime
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('translation.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+def get_timestamped_filename(filepath):
+    """Create a timestamped backup filename if the file exists."""
+    if os.path.exists(filepath):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path_obj = Path(filepath)
+        backup_name = f"{path_obj.stem}_{timestamp}{path_obj.suffix}"
+        return backup_name
+    return filepath
+
+def backup_existing_files(cache_file, bilingual_csv, audit_json, log_file):
+    """Backup existing output files with timestamps."""
+    files_backed_up = []
+    
+    for filepath in [cache_file, bilingual_csv, audit_json, log_file]:
+        if os.path.exists(filepath):
+            backup_name = get_timestamped_filename(filepath)
+            shutil.move(filepath, backup_name)
+            files_backed_up.append(f"{filepath} -> {backup_name}")
+    
+    if files_backed_up:
+        print("Backed up existing files:")
+        for backup in files_backed_up:
+            print(f"  {backup}")
+        print()
+    
+    return files_backed_up
+
+# Logging will be set up in main() after parsing args
 
 # Import style consistency modules
 try:
@@ -958,7 +978,22 @@ def main():
     ap.add_argument("--slides", default=None, help="Slide range, e.g., '1-6'")
     ap.add_argument("--style-preset", default="gengo", choices=["gengo","minimal"], help="Style preset to load into prompts (default: gengo)")
     ap.add_argument("--style-file", default=None, help="Path to custom style guide file")
+    ap.add_argument("--fresh", action="store_true", help="Backup existing output files with timestamps before creating new ones")
     args = ap.parse_args()
+    
+    # Backup existing files if --fresh flag is used  
+    if args.fresh:
+        backup_existing_files(args.cache, args.bilingual_csv, args.audit_json, "translation.log")
+    
+    # Set up logging after potential backup
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('translation.log'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
 
     slide_range = set()
     if args.slides:
