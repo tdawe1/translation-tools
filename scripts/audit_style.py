@@ -58,13 +58,16 @@ def audit_banned_words(rows: List[Tuple]) -> List[Dict[str, Any]]:
     """Check for banned phrases that indicate tone drift."""
     issues = []
     
-    banned_pattern = '|'.join(r'\b' + re.escape(phrase) + r'\b' for phrase in BANNED_PHRASES.keys())
+     # If there are no banned phrases, skip scanning entirely
+-    banned_pattern = '|'.join(r'\b' + re.escape(phrase) + r'\b' for phrase in BANNED_PHRASES.keys())
+    if not BANNED_PHRASES:
+        return issues
+    banned_pattern = '|'.join(r'\b' + re.escape(p) + r'\b' for p in BANNED_PHRASES.keys())
     regex = re.compile(banned_pattern, re.IGNORECASE)
-    
-    for slide_xml, idx, jp, en, kind in rows:
-        clean_text = re.sub(r'\[/?[^\]]+\]', '', en)
-        matches = regex.findall(clean_text)
-        
+     
+     for slide_xml, idx, jp, en, kind in rows:
+         clean_text = re.sub(r'\[/?[^\]]+\]', '', en)
+         matches = regex.findall(clean_text)
         for match in matches:
             suggested = BANNED_PHRASES.get(match.lower(), "review")
             issues.append({
@@ -306,8 +309,8 @@ def _get_suggested_fix(issue: Dict[str, Any]) -> str:
     
     return "Review manually"
 
-def should_fail_ci(audit_results: Dict[str, List[Dict[str, Any]]], 
-                   max_issues: int = 10, 
+def should_fail_ci(audit_results: Dict[str, List[Dict[str, Any]]],
+                   max_issues: int = 10,
                    critical_categories: List[str] = None) -> Tuple[bool, str]:
     """
     Determine if CI should fail based on audit results.
@@ -321,14 +324,19 @@ def should_fail_ci(audit_results: Dict[str, List[Dict[str, Any]]],
         Tuple of (should_fail, reason)
     """
     if critical_categories is None:
-        critical_categories = ["japanese_residual", "unbalanced_tags"]
+        # Category keys and/or critical issue types
+        critical_categories = ["japanese_residual", "formatting_tag_issues"]
     
     total_issues = sum(len(issues) for issues in audit_results.values())
     
-    # Check for critical issues
+    # Check for critical issues by category or by issue type within categories
     for category in critical_categories:
         if audit_results.get(category, []):
             return True, f"Critical issues found in {category}: {len(audit_results[category])} issues"
+    # Also fail if any issue of type 'unbalanced_tags' exists
+    unbalanced = sum(1 for issues in audit_results.values() for i in issues if i.get("type") == "unbalanced_tags")
+    if unbalanced:
+        return True, f"Critical issues found in unbalanced_tags: {unbalanced} issues"
     
     # Check total issue count
     if total_issues > max_issues:
