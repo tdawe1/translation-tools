@@ -8,6 +8,11 @@ JA -> EN PowerPoint translator that replaces text in the original file while pre
 - Caches translations (JSON sidecar) to avoid rework/re-costs.
 - Emits a bilingual CSV for QA and a JSON audit report (remaining JP counts, etc.).
 
+Enhancements (opt-in via env):
+- USE_TAGS=1 — preserve inline formatting via lightweight tags [b] [i] [u] [sup] [sub].
+- USE_PLACEHOLDERS=1 — lock numbers/URLs/IDs with ⟦…⟧ placeholders.
+- ENABLE_AUTOFIT=1 — enable shrink-to-fit on text bodies to reduce overlaps.
+
 Usage:
   python translate_pptx_inplace.py --in input.pptx --out output_en.pptx \
     --model gpt-4o --batch 40 --glossary glossary.json
@@ -31,32 +36,11 @@ CJK_PUNCT = r'\u3000-\u303f'
 FULLWIDTH = r'\uff00-\uffef'
 JP_ANY = re.compile(f'[{JP_CORE}{CJK_PUNCT}{FULLWIDTH}]')
 
-# Masking patterns for fragile content
-RX_NUM = re.compile(r"\d[\d,.\-\u2013%]*")
-RX_URL = re.compile(r"https?://\S+|www\.\S+")
-RX_CODE= re.compile(r"[A-Z]{2,}\d[\w\-]*")
-
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 
 def count_jp_chars(s: str) -> int:
     return len(JP_ANY.findall(s))
-
-def mask_fragile(s):
-    i, maps = 1, {}
-    def do(rx, tag, s):
-        nonlocal i
-        def repl(m):
-            nonlocal i
-            k = f"⟦{tag}_{i}⟧"; maps[k] = m.group(0); i += 1; return k
-        return rx.sub(repl, s)
-    s = do(RX_URL,"URL",s); s = do(RX_NUM,"NUM",s); s = do(RX_CODE,"CODE",s)
-    return s, maps
-
-def unmask_fragile(s, maps):
-    for k, v in maps.items():
-        s = s.replace(k, v)
-    return s
 
 def normalize_para_text(p_el):
     """Extract full visible text for a paragraph (concatenate runs, insert '\n' for a:br)."""
@@ -78,98 +62,186 @@ def normalize_para_text(p_el):
 
     return "".join(parts)
 
-def set_para_text(p_el, new_text: str):
-    """Word-aware replacement. Preserves word boundaries and turns '\n' into <a:br/>."""
-    t_tag = A_NS + "t"; r_tag = A_NS + "r"; br_tag = A_NS + "br"
-    import re
+# ---- Inline formatting tags support ----
+def extract_run_style(r_el):
+    rpr = r_el.find(A_NS + "rPr")
+    if rpr is None:
+        return {}
+    sty = {}
+    if rpr.get("b") in ("1", "true"):
+        sty["b"] = True
+    if rpr.get("i") in ("1", "true"):
+        sty["i"] = True
+    if rpr.get("u") and rpr.get("u") != "none":
+        sty["u"] = True
+    base = rpr.get("baseline")
+    if base:
+        try:
+            val = int(base)
+            if val > 0:
+                sty["sup"] = True
+            elif val < 0:
+                sty["sub"] = True
+        except Exception:
+            pass
+    return sty
 
-    # Collect runs (preserve overall styling distribution), clear <a:br/> and run text
+def style_open_tags(sty):
+    s = ""
+    if sty.get("b"): s += "[b]"
+    if sty.get("i"): s += "[i]"
+    if sty.get("u"): s += "[u]"
+    if sty.get("sup"): s += "[sup]"
+    if sty.get("sub"): s += "[sub]"
+    return s
+
+def style_close_tags(sty):
+    s = ""
+    if sty.get("sub"): s += "[/sub]"
+    if sty.get("sup"): s += "[/sup]"
+    if sty.get("u"): s += "[/u]"
+    if sty.get("i"): s += "[/i]"
+    if sty.get("b"): s += "[/b]"
+    return s
+
+def tagged_para_text(p_el):
+    parts = []
+    for node in p_el:
+        if node.tag == A_NS + "r":
+            t = node.find(A_NS + "t")
+            txt = "" if t is None or t.text is None else t.text
+            if not txt:
+                continue
+            sty = extract_run_style(node)
+            parts.append(style_open_tags(sty) + txt + style_close_tags(sty))
+        elif node.tag == A_NS + "br":
+            parts.append("\n")
+        else:
+            t = node.find(f".//{A_NS}t")
+            if t is not None and t.text:
+                parts.append(t.text)
+    return "".join(parts)
+
+# ---- Placeholder masking ----
+NUM_RE = re.compile(r"(?<!\w)(?:\d[\d,\.\-–%]*|\d{4})")
+URL_RE = re.compile(r"https?://[^\s]+|\b[\w.%-]+@[\w.-]+\.[A-Za-z]{2,}\b")
+CODE_RE = re.compile(r"\b[A-Z]{2,}[A-Z0-9\-_.]*\d+[A-Z0-9\-_.]*\b")
+
+def mask_placeholders(s: str):
+    mapping = {}
+    ctr = {"NUM":0, "URL":0, "CODE":0}
+    def repl(pattern, kind, text):
+        def _r(m):
+            ctr[kind]+=1
+            key=f"⟦{kind}_{ctr[kind]}⟧"
+            mapping[key]=m.group(0)
+            return key
+        return pattern.sub(_r, text)
+    out = s
+    out = repl(URL_RE, "URL", out)
+    out = repl(NUM_RE, "NUM", out)
+    out = repl(CODE_RE, "CODE", out)
+    return out, mapping
+
+def unmask_placeholders(s: str, mapping: dict):
+    for k,v in mapping.items():
+        s = s.replace(k, v)
+    return s
+
+def set_para_text(p_el, new_text: str):
+    """Replace paragraph text while preserving number of runs (rough distribution).
+    """
+    t_tag = A_NS + "t"
+    r_tag = A_NS + "r"
+
     runs = [child for child in p_el if child.tag == r_tag]
     if not runs:
         r = ET.Element(r_tag)
-        ET.SubElement(r, t_tag).text = ""
+        t = ET.SubElement(r, t_tag)
+        t.text = ""
         p_el.insert(0, r)
         runs = [r]
 
-    for child in list(p_el):
-        if child.tag == br_tag:
-            p_el.remove(child)
-    for r in runs:
-        t = r.find(t_tag) or ET.SubElement(r, t_tag)
-        t.text = ""
+    N = len(runs)
+    L = len(new_text)
+    if N == 1:
+        chunks = [new_text]
+    else:
+        base = L // N
+        rem = L % N
+        chunks = []
+        start = 0
+        for i in range(N):
+            size = base + (1 if i < rem else 0)
+            chunks.append(new_text[start:start+size])
+            start += size
 
-    # Tokenize: keep whitespace; use None sentinel for newline
-    def tokenize(s): return re.findall(r"\S+|\s+", s)
-    tokens = []
-    lines = new_text.split("\n")
-    for i, line in enumerate(lines):
-        tokens.extend(tokenize(line))
-        if i < len(lines) - 1:
-            tokens.append(None)  # newline marker
-
-    # Single run: dump text, insert <a:br/> at markers
-    if len(runs) == 1:
-        t = runs[0].find(t_tag)
-        buf = []
-        br_count = 0
-        for tok in tokens:
-            if tok is None:
-                # Insert <a:br/> after the run
-                br = ET.Element(br_tag)
-                run_idx = list(p_el).index(runs[0])
-                p_el.insert(run_idx + 1 + br_count, br)
-                br_count += 1
-            else:
-                buf.append(tok)
-        t.text = "".join(buf).strip()
-        return
-
-    # Multi-run: distribute on word boundaries proportional to original text lengths
-    orig_lens = [len((r.find(t_tag).text or "")) for r in runs]
-    total_words = sum(len(x) for x in tokens if isinstance(x, str))
-    total_base = sum(orig_lens) or total_words or 1
-    targets = []
-    acc = 0
-    for L in orig_lens:
-        share = round(total_words * (L / total_base))
-        targets.append(share); acc += share
-    if targets:
-        targets[-1] += (total_words - acc)  # fix rounding drift
-
-    def consume(n_chars):
-        taken, count = [], 0
-        while tokens:
-            tok = tokens[0]
-            if tok is None:  # stop before newline; caller will insert <a:br/>
-                break
-            need = len(tok)
-            # respect word boundaries
-            if count > 0 and not tok.isspace() and count + need > n_chars:
-                break
-            taken.append(tokens.pop(0))
-            count += need
-            if tokens and tokens[0] is None:
-                break
-        return "".join(taken)
-
-    # Fill each run, inserting <a:br/> exactly where newlines occur
-    for r, n in zip(runs, targets):
+    for r, chunk in zip(runs, chunks):
         t = r.find(t_tag)
-        t.text = consume(n)
-        while tokens and tokens[0] is None:
-            tokens.pop(0)
-            br = ET.Element(br_tag)
-            run_idx = list(p_el).index(r)
-            p_el.insert(run_idx + 1, br)
+        if t is None:
+            t = ET.SubElement(r, t_tag)
+        t.text = chunk
 
-    # Any leftovers go into the last run
-    if tokens:
-        tail = "".join(tok for tok in tokens if isinstance(tok, str))
-        last_t = runs[-1].find(t_tag)
-        last_t.text = (last_t.text or "") + tail
+    for r in runs[len(chunks):]:
+        t = r.find(t_tag)
+        if t is not None:
+            t.text = ""
 
-def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set | None = None):
-    """Return a flat list of (slide_name, paragraph_index, text)."""
+def set_para_text_tagged(p_el, tagged_text: str):
+    """Replace paragraph content from tagged text, reconstructing runs for b/i/u/sup/sub.
+    Tags: [b] [/b] [i] [/i] [u] [/u] [sup] [/sup] [sub] [/sub]
+    """
+    # Remove existing runs and line breaks
+    for child in list(p_el):
+        if child.tag in (A_NS+"r", A_NS+"br"):
+            p_el.remove(child)
+
+    # Parse simple tags
+    segments = []  # list of (set(styles), text)
+    stack = []
+    buf = []
+    s = tagged_text
+    i = 0
+    def flush():
+        if buf:
+            segments.append((set(stack), ''.join(buf)))
+            buf.clear()
+    while i < len(s):
+        if s[i] == '[':
+            j = s.find(']', i)
+            if j != -1:
+                tag = s[i+1:j]
+                if tag in ("b","i","u","sup","sub"):
+                    flush(); stack.append(tag); i = j+1; continue
+                if tag in ("/b","/i","/u","/sup","/sub"):
+                    flush(); tname = tag[1:]
+                    for k in range(len(stack)-1, -1, -1):
+                        if stack[k]==tname:
+                            del stack[k]; break
+                    i = j+1; continue
+        buf.append(s[i]); i+=1
+    flush()
+
+    # Rebuild runs according to segments
+    for styles, text in segments:
+        if not text:
+            continue
+        r = ET.SubElement(p_el, A_NS+"r")
+        rpr = ET.SubElement(r, A_NS+"rPr")
+        if "b" in styles: rpr.set("b","1")
+        if "i" in styles: rpr.set("i","1")
+        if "u" in styles: rpr.set("u","sng")
+        if "sup" in styles: rpr.set("baseline","30000")
+        if "sub" in styles: rpr.set("baseline","-25000")
+        t = ET.SubElement(r, A_NS+"t")
+        if text and (text[0].isspace() or text.endswith(' ')):
+            t.set("xml:space","preserve")
+        t.text = text
+
+def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set = None):
+    """Return a flat list of (slide_name, paragraph_index, text).
+    If USE_TAGS=1, paragraph text includes inline tags.
+    """
     paras = []
     slide_files = sorted([n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")])
 
@@ -184,19 +256,10 @@ def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set | None = None):
     for sf in slide_files:
         root = ET.fromstring(z.read(sf))
         for idx, p_el in enumerate(root.iter(A_NS + "p")):
-            text = normalize_para_text(p_el)
+            text = tagged_para_text(p_el) if os.getenv("USE_TAGS") == "1" else normalize_para_text(p_el)
             if text.strip():
                 paras.append((sf, idx, text))
     return paras, slide_files
-
-def _ensure_autofit(root):
-    # For every txBody, ensure <a:bodyPr><a:normAutofit/></a:bodyPr>
-    for tx in root.iter(A_NS + "txBody"):
-        bodyPr = tx.find(A_NS + "bodyPr")
-        if bodyPr is None:
-            bodyPr = ET.SubElement(tx, A_NS + "bodyPr")
-        if bodyPr.find(A_NS + "normAutofit") is None and bodyPr.find(A_NS + "spAutoFit") is None:
-            ET.SubElement(bodyPr, A_NS + "normAutofit")
 
 def _use_responses_api(model: str) -> bool:
     m = (model or "").lower()
@@ -204,14 +267,10 @@ def _use_responses_api(model: str) -> bool:
     return m.startswith("gpt-5") or os.getenv("OPENAI_USE_RESPONSES") == "1"
 
 def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    # OpenAI Responses API with GPT-5 reasoning model
+    # OpenAI Responses API
     try:
-        # Configure reasoning effort based on model - high for main translation, minimal for reviews
-        if model.startswith("gpt-5-mini"):
-            effort = "minimal"  # Fast reviewer
-        else:
-            effort = os.getenv("OPENAI_REASONING_EFFORT", "high")  # Deep thinking for translation
-        
+        # Support "high thinking" baseline via reasoning.effort
+        effort = os.getenv("OPENAI_REASONING_EFFORT", "high")
         resp = client.responses.create(
             model=model,
             input=[
@@ -219,7 +278,6 @@ def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, t
                 {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]},
             ],
             reasoning={"effort": effort},
-            verbosity="low",  # Concise responses, avoid chatty prose
             temperature=temperature,
             response_format={"type": "json"},
         )
@@ -250,27 +308,6 @@ def _chat_create(client, model: str, sys_prompt: str, user_payload: dict, temper
     )
     return resp.choices[0].message.content.strip()
 
-def _extract_json_array(s: str, expected_len: int):
-    import json, re
-    s = re.sub(r"^```(?:json)?|```$", "", s.strip(), flags=re.M)
-    dec = json.JSONDecoder()
-    in_str = esc = False; i = 0; n = len(s)
-    while i < n:
-        ch = s[i]
-        if esc: esc = False
-        elif ch == '\\' and in_str: esc = True
-        elif ch == '"': in_str = not in_str
-        elif not in_str and ch == '[':
-            try:
-                obj, end = dec.raw_decode(s, i)
-            except json.JSONDecodeError:
-                i += 1; continue
-            if isinstance(obj, list) and (expected_len == 0 or len(obj) >= expected_len):
-                return obj[:expected_len] if expected_len else obj
-            i = end; continue
-        i += 1
-    return None
-
 def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
     if style_file and os.path.exists(style_file):
         try:
@@ -280,9 +317,8 @@ def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
             pass
 
     preset = (style_preset or "").strip().lower()
-    base_guide = ""
     if preset in {"gengo", "gengo-ja-en", "gengo_ja_en"}:
-        base_guide = (
+        return (
             "Follow these JP→EN style rules (Gengo-inspired):\n"
             "- Tone: Natural, clear business English; avoid overly literal phrasing.\n"
             "- Honorifics: Omit honorifics unless required for meaning.\n"
@@ -297,106 +333,34 @@ def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
             "- Register: Prefer active voice; concise and persuasive B2B tone.\n"
             "- No additions: Do not summarize, omit, or invent content."
         )
-    
-    # Add conciseness rules for expansion management
-    conciseness_rules = (
-        "\n\nCONCISENESS RULES for slide translation:\n"
-        "- Use fragments, not full sentences in bullets\n"
-        "- Remove filler: \"in order to\"→\"to\", \"utilize\"→\"use\", \"as well as\"→\"and\"\n"
-        "- Drop articles where clear: \"the\", \"a\"\n"
-        "- Cut most instances of \"that\"\n"
-        "- Use symbols: \"and\"→\"&\" in labels, \"approximately\"→\"~\", \"versus\"→\"vs.\"\n"
-        "- One verb per bullet; cut adverbs\n"
-        "- Collapse double nouns: \"customer onboarding process\"→\"customer onboarding\"\n"
-        "- Keep parallel structure in bullet lists"
-    )
-    
-    return base_guide + conciseness_rules if base_guide else conciseness_rules
-
-def calculate_expansion_ratio(original_jp: str, translated_en: str) -> float:
-    """Calculate expansion ratio between Japanese and English text."""
-    jp_len = len(original_jp.strip())
-    en_len = len(translated_en.strip())
-    return en_len / jp_len if jp_len > 0 else 1.0
-
-def condense_text_block(client, model: str, text: str, target_ratio: float = 0.85) -> str:
-    """Stage 1: Compress text by removing filler while preserving meaning."""
-    if not text or len(text) < 50:  # Skip very short text
-        return text
-        
-    reduction_pct = int((1 - target_ratio) * 100)
-    prompt = f"""Shorten this English text by ~{reduction_pct}% while preserving all meaning.
-
-REQUIREMENTS:
-- Keep all numbers, URLs, and technical terms exactly as-is
-- Preserve any markup tags or placeholders ⟦…⟧
-- Use concise fragments for bullets, not full sentences
-- Remove filler: "in order to"→"to", "utilize"→"use", "as well as"→"and"
-- Drop unnecessary articles ("the", "a") and instances of "that"
-- One verb per bullet; cut adverbs where possible
-- Maintain professional tone and parallel structure
-- Do NOT change meaning or remove actual content
-
-Text to shorten:
-{text}"""
-
-    try:
-        if _use_responses_api(model):
-            resp = client.responses.create(
-                model=model,
-                reasoning_effort="high",
-                verbosity="low", 
-                input=[{"role": "user", "content": prompt}],
-                response_format={"type": "text"},
-                temperature=0.2,
-            )
-            content = getattr(resp, "output_text", None)
-            if not content and getattr(resp, "output", None):
-                try:
-                    content = resp.output[0].content[0].text
-                except Exception:
-                    pass
-            return content.strip() if content else text
-        else:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-            )
-            return resp.choices[0].message.content.strip()
-    except Exception:
-        return text  # Fallback to original if compression fails
+    return ""
 
 def batch_translate(client, model: str, items, glossary):
     """Translate list of strings JA->EN. Returns list of translations in order.
-    Uses GPT-5 reasoning model with deep thinking for best fidelity.
-    Falls back to Chat Completions for non-GPT-5 models.
+    Uses Responses API for gpt-5 models; falls back to Chat Completions otherwise.
     Expects a strict JSON array output.
     """
-    # Apply masking to protect fragile content
-    items_masked, maps = zip(*[mask_fragile(x) for x in items]) if items else ([], [])
-    
     # Compose system prompt with optional style guide
     style_guide = build_style_guide_text(
         os.getenv("STYLE_PRESET", ""), os.getenv("STYLE_GUIDE_FILE")
     )
     sys_prompt = (
-        "You are a professional Japanese-to-English translator for B2B marketing decks. "
-        "Think carefully about context, nuance, and business terminology before translating. "
-        "Translate faithfully and naturally; keep the meaning and tone persuasive yet neutral. "
-        "Do NOT summarize or add content. Preserve line breaks. "
+        "You are translating Japanese slide content to clear US-English for business decks. "
+        "Translate faithfully and naturally. Do NOT add or remove content. Preserve line breaks. "
+        "If inline tags like [b] [i] [u] [sup] [sub] or [li-lN]…[/li] are present, preserve them exactly. "
+        "If placeholders like ⟦NUM_1⟧ ⟦URL_2⟧ ⟦CODE_3⟧ are present, preserve them exactly. "
         "Keep numbers, URLs, and variable-like tokens intact. "
-        "Use sentence case for sentences; Title Case for slide titles where appropriate. "
+        "Use sentence case for body; Title Case for slide titles when appropriate. "
         "Respect the glossary exactly when terms occur. "
-        "Never return Japanese text in the output. If a term is untranslatable (product name, brand), retain it but translate surrounding text. "
         + ("\n" + style_guide if style_guide else "")
     )
 
     user_payload = {
         "glossary": glossary or {},
-        "strings": list(items_masked),
+        "strings": items,
         "instructions": [
             "Return ONLY a JSON array of translated strings in the same order.",
+            "Do not alter tag markers or placeholders; keep them exactly as provided.",
             "No code fences, no commentary."
         ],
     }
@@ -404,9 +368,9 @@ def batch_translate(client, model: str, items, glossary):
     use_responses = _use_responses_api(model)
     # Allow temperature override
     try:
-        temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.6"))
+        temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     except Exception:
-        temperature = 0.6
+        temperature = 0.2
 
     for attempt in range(3):
         try:
@@ -414,51 +378,15 @@ def batch_translate(client, model: str, items, glossary):
                 content = _responses_create(client, model, sys_prompt, user_payload, temperature)
             else:
                 content = _chat_create(client, model, sys_prompt, user_payload, temperature)
-        except Exception:
+        except Exception as e:
             # Backoff and retry on transient errors
             time.sleep(1 + attempt)
             continue
 
-        # Try robust JSON parsing first
-        data = _extract_json_array(content, len(items))
-        if data:
-            # Unmask fragile content in results
-            out = [unmask_fragile(str(y), maps[i]) for i, y in enumerate(data)]
-            
-            # Apply expansion policy if text is too long
-            if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
-                processed_out = []
-                for i, (original, translated) in enumerate(zip(items, out)):
-                    expansion_ratio = calculate_expansion_ratio(original, translated)
-                    # Apply compression for high expansion ratios
-                    if expansion_ratio > 1.5:  # Configurable threshold
-                        condensed = condense_text_block(client, model, translated, target_ratio=0.85)
-                        processed_out.append(condensed)
-                    else:
-                        processed_out.append(translated)
-                return processed_out
-            else:
-                return out
-            
-        # Fallback to simple JSON parsing
         try:
             data = json.loads(content)
             if isinstance(data, list) and len(data) == len(items):
-                out = [unmask_fragile(str(y), maps[i]) for i, y in enumerate(data)]
-                
-                # Apply expansion policy for fallback path too
-                if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
-                    processed_out = []
-                    for i, (original, translated) in enumerate(zip(items, out)):
-                        expansion_ratio = calculate_expansion_ratio(original, translated)
-                        if expansion_ratio > 1.5:
-                            condensed = condense_text_block(client, model, translated, target_ratio=0.85)
-                            processed_out.append(condensed)
-                        else:
-                            processed_out.append(translated)
-                    return processed_out
-                else:
-                    return out
+                return [str(x) for x in data]
         except Exception:
             # Not valid JSON array; retry
             time.sleep(1 + attempt)
@@ -510,10 +438,26 @@ def main():
     with zipfile.ZipFile(args.inp, "r") as zin:
         paras, slide_files = extract_all_paragraphs(zin, slide_range)
 
-    src_strings = [t for _, _, t in paras if JP_ANY.search(t)]
+    use_placeholders = os.getenv("USE_PLACEHOLDERS") == "1"
+
+    # Prepare list of source strings (possibly masked)
+    masks = {}
+    src_strings = []
+    for _, _, t in paras:
+        if JP_ANY.search(t):
+            if use_placeholders:
+                masked, mp = mask_placeholders(t)
+                masks[masked] = mp
+                src_strings.append(masked)
+            else:
+                src_strings.append(t)
+
     uniq = list(dict.fromkeys(src_strings))
-    # Treat identity-mapped entries as missing to avoid caching failures where source == target
-    missing = [s for s in uniq if s not in cache or cache.get(s) == s]
+    # Treat identity-mapped or JP-like cached entries as missing to avoid caching failures
+    missing = [
+        s for s in uniq
+        if s not in cache or cache.get(s) == s or (cache.get(s) and count_jp_chars(cache.get(s)) > 0)
+    ]
 
     i = 0
     calls = 0
@@ -522,6 +466,8 @@ def main():
         out = batch_translate(client, args.model, batch, glossary)
         calls += 1
         for s, t in zip(batch, out):
+            if use_placeholders and s in masks:
+                t = unmask_placeholders(t, masks[s])
             cache[s] = t
         i += args.batch
 
@@ -532,10 +478,12 @@ def main():
     import csv
     with open(args.bilingual_csv, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["slide_xml","paragraph_idx","Japanese","English"])
-        for sf, idx, jp in paras:
-            en = cache.get(jp, jp)
-            w.writerow([sf, idx, jp, en])
+        w.writerow(["Japanese", "English"])
+        for s in uniq:
+            src_disp = s
+            if use_placeholders and s in masks:
+                src_disp = unmask_placeholders(s, masks[s])
+            w.writerow([src_disp, cache.get(s, src_disp)])
 
     # Write output PPTX
     tmp = args.outp + ".tmp"
@@ -546,6 +494,8 @@ def main():
     per_before = {}
     per_after = {}
 
+    enable_autofit = os.getenv("ENABLE_AUTOFIT") == "1"
+    use_tags = os.getenv("USE_TAGS") == "1"
     with zipfile.ZipFile(args.inp, "r") as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
         for name in zin.namelist():
             data = zin.read(name)
@@ -553,28 +503,41 @@ def main():
                 root = ET.fromstring(data)
                 texts = []
                 for p in root.iter(A_NS + "p"):
-                    t = normalize_para_text(p)
+                    t = tagged_para_text(p) if use_tags else normalize_para_text(p)
                     texts.append(t)
                 per_before[name] = sum(count_jp_chars(t) for t in texts)
                 before_total += per_before[name]
 
                 changed = False
                 for p in root.iter(A_NS + "p"):
-                    src_text = normalize_para_text(p)
+                    src_text = tagged_para_text(p) if use_tags else normalize_para_text(p)
                     if src_text.strip() and JP_ANY.search(src_text):
-                        tgt = cache.get(src_text)
+                        key = src_text
+                        if use_placeholders:
+                            key, _ = mask_placeholders(src_text)
+                        tgt = cache.get(key)
                         if tgt:
-                            set_para_text(p, tgt)
+                            if use_tags:
+                                set_para_text_tagged(p, tgt)
+                            else:
+                                set_para_text(p, tgt)
                             changed = True
+                # Optionally enable shrink-to-fit on text bodies
+                if enable_autofit:
+                    for tx in root.findall(f".//{A_NS}txBody"):
+                        bodyPr = tx.find(A_NS+"bodyPr")
+                        if bodyPr is None:
+                            bodyPr = ET.SubElement(tx, A_NS+"bodyPr")
+                        if bodyPr.find(A_NS+"normAutofit") is None:
+                            ET.SubElement(bodyPr, A_NS+"normAutofit")
                 if changed:
-                    _ensure_autofit(root)
                     data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
                 # Recalc after
                 root2 = ET.fromstring(data)
                 txt2 = []
                 for p in root2.iter(A_NS + "p"):
-                    t = normalize_para_text(p)
+                    t = tagged_para_text(p) if use_tags else normalize_para_text(p)
                     txt2.append(t)
                 per_after[name] = sum(count_jp_chars(t) for t in txt2)
                 after_total += per_after[name]
