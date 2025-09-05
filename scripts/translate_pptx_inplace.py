@@ -10,14 +10,32 @@ JA -> EN PowerPoint translator that replaces text in the original file while pre
 
 Usage:
   python translate_pptx_inplace.py --in input.pptx --out output_en.pptx \
-    --model gpt-4o --batch 40 --glossary glossary.json
+    --model gpt-4o-2024-08-06
+
+Production Presets:
+  Conservative (rock-solid):  --model gpt-4o-2024-08-06 (auto batch 8-12, max retries)
+  Balanced (recommended):     --model gpt-4o-2024-08-06 (auto batch 10-14) 
+  Cost-lean (good quality):   --model gpt-4o-mini (auto batch 12-16)
+
+Batch sizes auto-calculated based on model and token estimates.
+Override with --batch N (8-24 recommended range).
 
 Env:
   OPENAI_API_KEY must be set.
 """
-import argparse, json, os, re, shutil, sys, time, zipfile
+import argparse, json, os, re, shutil, sys, time, zipfile, logging
 from xml.etree import ElementTree as ET
 from pathlib import Path
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('translation.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 # Import style consistency modules
 try:
@@ -240,7 +258,7 @@ def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, t
         resp = client.responses.create(
             model=model,
             input=[
-                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]}
+                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
                 {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
             ],
             reasoning={"effort": effort},
@@ -742,6 +760,8 @@ def batch_translate(client, model: str, items, glossary):
     Falls back to Chat Completions for non-GPT-5 models.
     Expects a strict JSON array output.
     """
+    global _slide_notes_content
+    logging.debug(f"Starting batch translation of {len(items)} items with model {model}")
     # Apply masking to protect fragile content
     items_masked, maps = zip(*[mask_fragile(x) for x in items]) if items else ([], [])
     
@@ -835,7 +855,6 @@ def batch_translate(client, model: str, items, glossary):
                 
                 # Store notes content globally for PPTX write-back
                 # Map original text to notes content for lookup during processing
-                global _slide_notes_content
                 for original, notes in zip(items, notes_content):
                     if notes.strip():
                         _slide_notes_content[original] = notes
@@ -907,7 +926,6 @@ def batch_translate(client, model: str, items, glossary):
                             notes_content.append("")
                     
                     # Store notes content globally
-                    global _slide_notes_content
                     for original, notes in zip(items, notes_content):
                         if notes.strip():
                             _slide_notes_content[original] = notes
@@ -951,8 +969,11 @@ def main():
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        print("ERROR: Set OPENAI_API_KEY in environment.", file=sys.stderr)
+        logging.error("OPENAI_API_KEY not set in environment")
         sys.exit(2)
+    
+    logging.info(f"Starting translation: {args.inp} -> {args.outp}")
+    logging.info(f"Model: {args.model}, Batch size: {args.batch}")
 
     base_url = os.getenv("OPENAI_BASE_URL", "").strip()
     if base_url:
@@ -972,20 +993,112 @@ def main():
 
     with zipfile.ZipFile(args.inp, "r") as zin:
         paras, slide_files = extract_all_paragraphs(zin, slide_range)
+    
+    logging.info(f"Extracted {len(paras)} paragraphs from {len(slide_files)} slides")
 
     src_strings = [t for _, _, t in paras if JP_ANY.search(t)]
     uniq = list(dict.fromkeys(src_strings))
     # Treat identity-mapped entries as missing to avoid caching failures where source == target
     missing = [s for s in uniq if s not in cache or cache.get(s) == s]
+    
+    logging.info(f"Found {len(src_strings)} Japanese strings, {len(uniq)} unique")
+    logging.info(f"Cache has {len(cache)} entries, {len(missing)} strings need translation")
+
+    # Auto-sizing batch logic based on model and content
+    def calculate_optimal_batch_size(model: str, avg_tokens_per_item: int = 50) -> int:
+        """Calculate optimal batch size based on model and estimated token usage."""
+        # Model-specific token targets
+        if model == "gpt-4o-mini":
+            TARGET_REQ_TOKENS = 8_000
+        elif model.startswith("gpt-4o-"):
+            TARGET_REQ_TOKENS = 10_000
+        else:
+            TARGET_REQ_TOKENS = 8_000  # Conservative default
+        
+        MAX_ARRAY_ITEMS = 24  # Keep JSON outputs manageable
+        
+        # Estimate tokens (rough calculation)
+        prefix_tokens = 1500  # System prompt + schema + glossary (often cached)
+        tokens_per_block = avg_tokens_per_item * 2  # Input + expected output
+        
+        raw = int((TARGET_REQ_TOKENS - prefix_tokens) / tokens_per_block)
+        batch_size = max(8, min(MAX_ARRAY_ITEMS, raw))  # Clamp to 8..24
+        
+        return batch_size
+    
+    # Use auto-sizing if no explicit batch size given, or validate the provided size
+    if args.batch == 40:  # Default value, use auto-sizing
+        optimal_batch = calculate_optimal_batch_size(args.model)
+        logging.info(f"Auto-calculated optimal batch size: {optimal_batch} for model {args.model}")
+        args.batch = optimal_batch
+    else:
+        # Validate user-provided batch size
+        optimal_batch = calculate_optimal_batch_size(args.model)
+        if args.batch > 24:
+            logging.warning(f"Batch size {args.batch} > 24 may cause JSON truncation. Recommended: {optimal_batch}")
+        elif args.batch < 8:
+            logging.warning(f"Batch size {args.batch} < 8 may be inefficient. Recommended: {optimal_batch}")
+    
+    # ETA estimation setup
+    from eta import ETAEstimator, fmt_hms
+    eta = ETAEstimator(alpha=0.25)
+    start = time.time()
+    total_batches = (len(missing) + args.batch - 1) // args.batch
+    total_items = len(missing)
+    processed_items = 0
+    retry_count = 0
 
     i = 0
     calls = 0
     while i < len(missing):
         batch = missing[i:i+args.batch]
-        out = batch_translate(client, args.model, batch, glossary)
+        
+        # Time the batch translation with retry handling
+        t0 = time.time()
+        batch_success = False
+        attempt = 0
+        
+        while not batch_success and attempt < 3:
+            try:
+                out = batch_translate(client, args.model, batch, glossary)
+                batch_success = True
+            except Exception as e:
+                attempt += 1
+                retry_count += 1
+                logging.warning(f"Batch failed (attempt {attempt}/3): {e}")
+                
+                # Check retry rate and adjust batch size if needed
+                retry_rate = retry_count / max(1, calls + 1)
+                if retry_rate > 0.05 and args.batch > 8:  # >5% retries
+                    new_batch_size = max(8, int(args.batch * 0.75))  # Drop by 25%
+                    logging.warning(f"High retry rate ({retry_rate:.1%}), reducing batch size: {args.batch} → {new_batch_size}")
+                    args.batch = new_batch_size
+                    total_batches = (len(missing) + args.batch - 1) // args.batch
+                
+                if attempt < 3:
+                    time.sleep(1 + attempt)  # Backoff
+                else:
+                    logging.error(f"Batch failed after 3 attempts, skipping batch")
+                    out = ["[TRANSLATION_FAILED]"] * len(batch)
+        
+        t1 = time.time()
+        
+        # Update ETA estimator
+        batch_size = len(batch)
+        eta.update((t1 - t0) / max(1, batch_size))
+        processed_items += batch_size
+        remaining_items = total_items - processed_items
+        est_seconds = (remaining_items * (eta.sec_per_item or 0))
+        
         calls += 1
         for s, t in zip(batch, out):
             cache[s] = t
+        
+        # Display progress with retry info
+        elapsed = time.time() - start
+        retry_info = f" | Retries: {retry_count}" if retry_count > 0 else ""
+        logging.info(f"[{calls}/{total_batches}] Processed {processed_items}/{total_items} items | ETA {fmt_hms(est_seconds)} | Elapsed {fmt_hms(elapsed)}{retry_info}")
+        
         i += args.batch
 
     with open(args.cache, "w", encoding="utf-8") as f:

@@ -5,7 +5,7 @@ Returns structured feedback for deterministic authority fixes.
 """
 import json
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from style_normalize import SMALL_WORDS, BANNED_PHRASES, title_case, get_style_guide
 
 def create_style_checker_prompt(translations: List[str], glossary: Dict[str, str] = None, deck_tone: Dict[str, Any] = None) -> str:
@@ -28,9 +28,7 @@ def create_style_checker_prompt(translations: List[str], glossary: Dict[str, str
     
     style_guide = get_style_guide()
     
-    from typing import List, Dict, Any, Optional
-
-def create_style_checker_prompt(glossary: Optional[Dict[str, str]] = None, deck_tone: Optional[Dict[str, Any]] = None) -> str:
+def create_style_checker_prompt_v2(glossary: Optional[Dict[str, str]] = None, deck_tone: Optional[Dict[str, Any]] = None) -> str:
     """Create prompt for style checking with JSON diagnostics output."""
     
     glossary_section = ""
