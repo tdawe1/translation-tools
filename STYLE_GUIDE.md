@@ -42,25 +42,23 @@
 ---
 
 ### Reviewer diagnostics (for JSON checks; no rewrites)
-Return flags only:
+Return flags only (matches scripts/style_checker.py):
 ```json
 {
-  "mechanics": {
-    "quotes_rule": true,
-    "periods_commas_inside_quotes": true,
-    "serial_comma_missed": [3, 5],
-    "date_style_violations": [12],
-    "thousands_separator_missed": [7],
-    "range_dash_needed": [9]
+  "style": {
+    "title_case_violations": [],
+    "bullet_terminal_punctuation": [],
+    "parallelism_issues": [],
+    "glossary_violations": [],
+    "banned_phrases": [],
+    "punctuation_errors": []
   },
-  "structure": {
-    "bullet_terminal_punct": [2],
-    "parallelism_mismatch": [{ "slide": 14, "bullets": [1,2,3] }]
-  },
-  "tone": {
+  "tone_flags": {
+    "added_hype": [],
+    "softened_claims": [],
     "over_formalized": false,
     "over_casual": false,
-    "added_hype_terms": []
+    "deviation_from_deck_profile": []
   }
 }
 ```
