@@ -58,13 +58,16 @@ def audit_banned_words(rows: List[Tuple]) -> List[Dict[str, Any]]:
     """Check for banned phrases that indicate tone drift."""
     issues = []
     
-    banned_pattern = '|'.join(r'\b' + re.escape(phrase) + r'\b' for phrase in BANNED_PHRASES.keys())
+     # If there are no banned phrases, skip scanning entirely
+-    banned_pattern = '|'.join(r'\b' + re.escape(phrase) + r'\b' for phrase in BANNED_PHRASES.keys())
+    if not BANNED_PHRASES:
+        return issues
+    banned_pattern = '|'.join(r'\b' + re.escape(p) + r'\b' for p in BANNED_PHRASES.keys())
     regex = re.compile(banned_pattern, re.IGNORECASE)
-    
-    for slide_xml, idx, jp, en, kind in rows:
-        clean_text = re.sub(r'\[/?[^\]]+\]', '', en)
-        matches = regex.findall(clean_text)
-        
+     
+     for slide_xml, idx, jp, en, kind in rows:
+         clean_text = re.sub(r'\[/?[^\]]+\]', '', en)
+         matches = regex.findall(clean_text)
         for match in matches:
             suggested = BANNED_PHRASES.get(match.lower(), "review")
             issues.append({
