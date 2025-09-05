@@ -17,12 +17,14 @@ Env:
 """
 import argparse, json, os, re, shutil, sys, time, zipfile
 from xml.etree import ElementTree as ET
+from pathlib import Path
 
 # Import style consistency modules
 try:
     from style_normalize import normalize_block, get_style_guide, apply_style_guide_to_prompt, detect_content_type as detect_content_type_from_text
     from style_checker import model_style_check, apply_style_fixes, run_style_check
     from pptx_format import apply_deck_formatting_profile
+    from style_mechanics_normalize import normalize_punct, bullet_fragment
     STYLE_MODULES_AVAILABLE = True
 except ImportError:
     print("Warning: Style modules not found. Running without style consistency features.")
@@ -64,7 +66,7 @@ def mask_fragile(s):
         nonlocal i
         def repl(m):
             nonlocal i
-            k = f"⟦{tag}_{i}⟧"; maps[k] = m.group(0); i += 1; return k
+            k = f"⟦{{tag}}_{{i}}⟧"; maps[k] = m.group(0); i += 1; return k
         return rx.sub(repl, s)
     s = do(RX_URL,"URL",s); s = do(RX_NUM,"NUM",s); s = do(RX_CODE,"CODE",s)
     return s, maps
@@ -231,8 +233,8 @@ def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, t
         resp = client.responses.create(
             model=model,
             input=[
-                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
-                {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]},
+                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]}
+                {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
             ],
             reasoning={"effort": effort},
             text={"verbosity": "low"},  # Concise responses, avoid chatty prose
@@ -275,7 +277,7 @@ def _extract_json_array(s: str, expected_len: int):
         ch = s[i]
         if esc: esc = False
         elif ch == '\\' and in_str: esc = True
-        elif ch == '"': in_str = not in_str
+        elif ch == '"' and in_str: in_str = not in_str
         elif not in_str and ch == '[':
             try:
                 obj, end = dec.raw_decode(s, i)
@@ -288,46 +290,78 @@ def _extract_json_array(s: str, expected_len: int):
     return None
 
 def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
-    if style_file and os.path.exists(style_file):
+    """Return style guide text used in prompts."""
+    if style_file:
         try:
-            with open(style_file, "r", encoding="utf-8") as f:
-                return f.read().strip()
+            return Path(style_file).read_text(encoding="utf-8")
         except Exception:
             pass
-
-    preset = (style_preset or "").strip().lower()
-    base_guide = ""
-    if preset in {"gengo", "gengo-ja-en", "gengo_ja_en"}:
-        base_guide = (
-            "Follow these JP→EN style rules (Gengo-inspired):\n"
-            "- Tone: Natural, clear business English; avoid overly literal phrasing.\n"
-            "- Honorifics: Omit honorifics unless required for meaning.\n"
-            "- Formatting: Preserve line breaks and bullet structure. Do not add new bullets.\n"
-            "- Punctuation: Use ASCII punctuation; convert full-width to half-width.\n"
-            "- Capitalization: Sentence case for sentences; Title Case for slide/section titles.\n"
-            "- Numerals: Keep numbers, percentages (%), units (e.g., GB), and URLs as-is.\n"
-            "- Dates: Use target-locale English (e.g., January 5, 2025) where explicit.\n"
-            "- Proper nouns: Keep brand/product capitalization; do not translate names.\n"
-            "- Acronyms: Expand on first use if unclear, then use acronym.\n"
-            "- Currency: Do not convert values; if symbol ambiguous, append ISO code (e.g., JPY).\n"
-            "- Register: Prefer active voice; concise and persuasive B2B tone.\n"
-            "- No additions: Do not summarize, omit, or invent content."
+    if style_preset in ("gengo", "", None):
+        # Default to project STYLE_GUIDE.md
+        for candidate in ("STYLE_GUIDE.md", "./STYLE_GUIDE.md"):
+            p = Path(candidate)
+            if p.exists():
+                return p.read_text(encoding="utf-8")
+        # Fallback minimal if file not present
+        return (
+            "Mirror tone from Japanese; neutral–professional if ambiguous. "
+            "Quotes use double marks; commas inside quotes. Serial comma for clarity. "
+            "Dates Month Day, Year. Thousands separators. Tilde ranges → en dashes. "
+            "Convert JP punctuation to EN. Bullet fragments, no terminal period. "
+            "If too long: condense ~15% → Notes spill → shrink-to-fit."
         )
-    
-    # Add conciseness rules for expansion management
-    conciseness_rules = (
-        "\n\nCONCISENESS RULES for slide translation:\n"
-        "- Use fragments, not full sentences in bullets\n"
-        "- Remove filler: \"in order to\"→\"to\", \"utilize\"→\"use\", \"as well as\"→\"and\"\n"
-        "- Drop articles where clear: \"the\", \"a\"\n"
-        "- Cut most instances of \"that\"\n"
-        "- Use symbols: \"and\"→\"&\" in labels, \"approximately\"→\"~\", \"versus\"→\"vs.\"\n"
-        "- One verb per bullet; cut adverbs\n"
-        "- Collapse double nouns: \"customer onboarding process\"→\"customer onboarding\"\n"
-        "- Keep parallel structure in bullet lists"
+    if style_preset == "minimal":
+        return "Translate naturally, keep numbers/URLs exact, preserve list structure."
+    return ""
+
+def make_producer_prompt(items, style_guide: str, glossary: dict) -> str:
+    tone_inference = (
+        "Tone & register: Infer and mirror tone from the Japanese. "
+        "If ambiguous, default to neutral–professional. Do not add hype or weaken claims. "
+        "Translate the entire block naturally (not word-by-word)."
     )
-    
-    return base_guide + conciseness_rules if base_guide else conciseness_rules
+    return (
+        f"{tone_inference}\n\n"
+        "Preserve tags/placeholders exactly. Keep list structure.\n\n"
+        f"STYLE_GUIDE (Gengo-aligned):\n{style_guide}\n\n"
+        f"GLOSSARY:\n{json.dumps(glossary, ensure_ascii=False)}\n\n"
+        f"ITEMS:\n{json.dumps(items, ensure_ascii=False)}"
+    )
+
+REVIEWER_INSTRUCTIONS = """Given JP source and the tagged EN candidate, check fidelity:
+omissions, additions, number/url mismatches, glossary violations, tag integrity.
+Then check mechanics (Gengo-aligned) and tone drift. Return JSON only.
+Schema:
+{
+  "omissions": [], "additions": [],
+  "number_mismatches": [], "url_mismatches": [],
+  "glossary_violations": [],
+  "tag_integrity": {"ok": true, "details": []},
+  "mechanics": {
+    "quotes_rule": true,
+    "periods_commas_inside_quotes": true,
+    "serial_comma_missed": [],
+    "date_style_violations": [],
+    "thousands_separator_missed": [],
+    "range_dash_needed": []
+  },
+  "structure": {
+    "bullet_terminal_punct": [],
+    "parallelism_mismatch": []
+  },
+  "tone": {
+    "over_formalized": false,
+    "over_casual": false,
+    "added_hype_terms": []
+  }
+}"""
+
+def make_reviewer_prompt(jp_source, en_candidate, glossary, style_guide):
+    return (
+        f"{REVIEWER_INSTRUCTIONS}\n"
+        f"STYLE_GUIDE (Gengo-aligned):\n{style_guide}\n"
+        f"JP:\n{jp_source}\nEN:\n{en_candidate}"
+    )
 
 def calculate_expansion_ratio(original_jp: str, translated_en: str) -> float:
     """Calculate expansion ratio between Japanese and English text."""
@@ -411,19 +445,19 @@ def spill_to_notes(text_block: str, content_type: str = "bullet") -> tuple[str, 
             parts = re.split(r'\s*(?:,\s*(?:and|but|or)|;\s*)\s*', text_block)
             if len(parts) > 1:
                 stub_text = parts[0] + " (detail → Notes)"
-                spilled_content = f"Additional details: {' '.join(parts[1:])}"
+                spilled_content = f"Additional details: {" ".join(parts[1:])}"
                 return stub_text, spilled_content
             else:
                 # Last resort: split at halfway point on word boundary
                 words = text_block.split()
                 split_point = len(words) // 2
                 stub_text = " ".join(words[:split_point]) + " (more → Notes)"
-                spilled_content = f"Continued: {' '.join(words[split_point:])}"
+                spilled_content = f"Continued: {" ".join(words[split_point:])}"
                 return stub_text, spilled_content
         else:
             # Multiple sentences - keep first, spill rest
             stub_text = sentences[0] + " (detail → Notes)"
-            spilled_content = f"Additional details: {' '.join(sentences[1:])}"
+            spilled_content = f"Additional details: {" ".join(sentences[1:])}"
             return stub_text, spilled_content
     
     elif content_type == "table":
@@ -668,7 +702,10 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
     for translation in translations:
         # Detect content type for appropriate normalization
         content_type = detect_content_type_from_text(translation)
-        normalized = normalize_block(translation, content_type)
+        if content_type == 'title':
+            normalized = normalize_punct(translation)
+        else:
+            normalized = bullet_fragment(normalize_punct(translation))
         normalized_translations.append(normalized)
     
     # Stage 2: Model-based style checking (if enabled)
@@ -703,35 +740,10 @@ def batch_translate(client, model: str, items, glossary):
     
     # Compose system prompt with style guide integration
     style_guide = build_style_guide_text(
-        os.getenv("STYLE_PRESET", ""), os.getenv("STYLE_GUIDE_FILE")
+        os.getenv("STYLE_PRESET", "gengo"), os.getenv("STYLE_GUIDE_FILE")
     )
     
-    base_prompt = (
-        "You are a professional Japanese-to-English translator for B2B marketing decks. "
-        "Think carefully about context, nuance, and business terminology before translating. "
-        "Translate faithfully and naturally; keep the meaning and tone persuasive yet neutral. "
-        "Do NOT summarize or add content. Preserve line breaks. "
-        "Keep numbers, URLs, and variable-like tokens intact. "
-        "Use sentence case for sentences; Title Case for slide titles where appropriate. "
-        "Respect the glossary exactly when terms occur. "
-        "Never return Japanese text in the output. If a term is untranslatable (product name, brand), retain it but translate surrounding text. "
-        "Use the same tone throughout: concise, benefits-led, neutral-confident. "
-        "If the source is formal, keep it formal; otherwise default to professional marketing tone. "
-    )
-    
-    # Add integrated style guide
-    if STYLE_MODULES_AVAILABLE:
-        sys_prompt = apply_style_guide_to_prompt(base_prompt)
-    else:
-        sys_prompt = base_prompt + ("\n" + style_guide if style_guide else "")
-
-    # Add deck tone profile if available
-    deck_tone_path = "deck_tone.json"
-    if os.path.exists(deck_tone_path):
-        with open(deck_tone_path, "r", encoding="utf-8") as f:
-            deck_tone = json.load(f)
-        sys_prompt += "\n\nUse the deck tone profile as a tie-breaker only when the source tone is ambiguous. Otherwise, mirror the source."
-        sys_prompt += f"\nTONE_PROFILE:\n{json.dumps(deck_tone, ensure_ascii=False, indent=2)}"
+    sys_prompt = make_producer_prompt(items, style_guide, glossary)
 
     user_payload = {
         "glossary": glossary or {},
@@ -919,6 +931,8 @@ def main():
     ap.add_argument("--model", default=os.getenv("OPENAI_MODEL", "gpt-5"))
     ap.add_argument("--batch", type=int, default=40, help="Batch size for API calls")
     ap.add_argument("--slides", default=None, help="Slide range, e.g., '1-6'")
+    ap.add_argument("--style-preset", default="gengo", choices=["gengo","minimal"], help="Style preset to load into prompts (default: gengo)")
+    ap.add_argument("--style-file", default=None, help="Path to custom style guide file")
     args = ap.parse_args()
 
     slide_range = set()
