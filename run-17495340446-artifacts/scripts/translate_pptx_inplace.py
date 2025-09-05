@@ -221,11 +221,11 @@ def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, t
         resp = client.responses.create(
             model=model,
             input=[
-                {"role": "system", "content": [{"type": "output_text", "text": sys_prompt}]},
+                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
                 {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]},
             ],
             reasoning={"effort": effort},
-            verbosity="low",  # Concise responses, avoid chatty prose
+            text={"verbosity": "low"},  # Concise responses, avoid chatty prose
             temperature=temperature,
             response_format={"type": "json"},
         )
@@ -351,7 +351,7 @@ Text to shorten:
             resp = client.responses.create(
                 model=model,
                 reasoning_effort="high",
-                verbosity="low", 
+                text={"verbosity": "low"}, 
                 input=[{"role": "user", "content": prompt}],
                 response_format={"type": "text"},
                 temperature=0.2,
