@@ -39,6 +39,9 @@ RX_CODE= re.compile(r"[A-Z]{2,}\d[\w\-]*")
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 
+# Global storage for notes content during processing
+_slide_notes_content = {}
+
 def count_jp_chars(s: str) -> int:
     return len(JP_ANY.findall(s))
 
@@ -367,6 +370,159 @@ Text to shorten:
     except Exception:
         return text  # Fallback to original if compression fails
 
+def spill_to_notes(text_block: str, content_type: str = "bullet") -> tuple[str, str]:
+    """Stage 2: Move overflow content to Notes with reference stub."""
+    import re
+    
+    if content_type == "title":
+        # For titles, just truncate at reasonable length and add ellipsis
+        if len(text_block) > 80:  # Conservative title length
+            words = text_block.split()
+            truncated = []
+            char_count = 0
+            for word in words:
+                if char_count + len(word) + 1 > 75:  # Leave room for ellipsis
+                    break
+                truncated.append(word)
+                char_count += len(word) + 1
+            
+            stub_text = " ".join(truncated) + "..."
+            spilled_content = f"Full title: {text_block}"
+            return stub_text, spilled_content
+    
+    elif content_type == "bullet":
+        # Split bullets at sentence boundaries or logical breaks
+        sentences = re.split(r'(?<=[.!?;])\s+', text_block)
+        if len(sentences) <= 1:
+            # Single sentence - try to split at conjunctions or commas
+            parts = re.split(r'\s*(?:,\s*(?:and|but|or)|;\s*)\s*', text_block)
+            if len(parts) > 1:
+                stub_text = parts[0] + " (detail → Notes)"
+                spilled_content = f"Additional details: {' '.join(parts[1:])}"
+                return stub_text, spilled_content
+            else:
+                # Last resort: split at halfway point on word boundary
+                words = text_block.split()
+                split_point = len(words) // 2
+                stub_text = " ".join(words[:split_point]) + " (more → Notes)"
+                spilled_content = f"Continued: {' '.join(words[split_point:])}"
+                return stub_text, spilled_content
+        else:
+            # Multiple sentences - keep first, spill rest
+            stub_text = sentences[0] + " (detail → Notes)"
+            spilled_content = f"Additional details: {' '.join(sentences[1:])}"
+            return stub_text, spilled_content
+    
+    elif content_type == "table":
+        # For table cells, aggressive abbreviation + Notes reference
+        words = text_block.split()
+        if len(words) > 5:
+            stub_text = " ".join(words[:3]) + "... (Notes)"
+            spilled_content = f"Full content: {text_block}"
+            return stub_text, spilled_content
+    
+    # Default fallback
+    words = text_block.split()
+    if len(words) > 8:
+        stub_text = " ".join(words[:6]) + " (→Notes)"
+        spilled_content = f"Complete text: {text_block}"
+        return stub_text, spilled_content
+    
+    return text_block, ""  # No spill needed
+
+def verify_content_integrity(original_jp: str, stub_en: str, notes_en: str, glossary: dict) -> bool:
+    """Reviewer function: verify no numbers/URLs/glossary terms lost in split."""
+    combined_en = stub_en + " " + notes_en
+    
+    # Check for numbers (including Japanese numerals and percentages)
+    import re
+    jp_numbers = re.findall(r'\d+(?:[,.]?\d+)*[%％]?', original_jp)
+    en_numbers = re.findall(r'\d+(?:[,.]?\d+)*[%％]?', combined_en)
+    
+    if len(jp_numbers) != len(en_numbers):
+        return False
+    
+    # Check URLs
+    jp_urls = re.findall(r'https?://\S+|www\.\S+', original_jp)  
+    en_urls = re.findall(r'https?://\S+|www\.\S+', combined_en)
+    
+    if len(jp_urls) != len(en_urls):
+        return False
+    
+    # Check glossary terms are preserved
+    for jp_term, en_term in glossary.items():
+        if jp_term in original_jp and en_term not in combined_en:
+            return False
+    
+    return True
+
+def add_notes_to_slide(zout: zipfile.ZipFile, slide_name: str, notes_content: list[str]) -> None:
+    """Add or update slide notes with spilled content."""
+    if not any(notes_content):  # No notes to add
+        return
+        
+    # Generate notes slide XML filename 
+    slide_num = slide_name.split("slide")[1].split(".xml")[0]
+    notes_name = f"ppt/notesSlides/notesSlide{slide_num}.xml"
+    
+    # Combine all non-empty notes content
+    combined_notes = "\n\n".join(note for note in notes_content if note.strip())
+    if not combined_notes.strip():
+        return
+    
+    # Create basic notes slide XML structure
+    notes_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" 
+         xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" 
+         xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+    <p:cSld>
+        <p:spTree>
+            <p:nvGrpSpPr>
+                <p:cNvPr id="1" name=""/>
+                <p:cNvGrpSpPr/>
+                <p:nvPr/>
+            </p:nvGrpSpPr>
+            <p:grpSpPr>
+                <a:xfrm>
+                    <a:off x="0" y="0"/>
+                    <a:ext cx="0" cy="0"/>
+                    <a:chOff x="0" y="0"/>
+                    <a:chExt cx="0" cy="0"/>
+                </a:xfrm>
+            </p:grpSpPr>
+            <p:sp>
+                <p:nvSpPr>
+                    <p:cNvPr id="2" name="Notes Placeholder"/>
+                    <p:cNvSpPr>
+                        <a:spLocks noGrp="1"/>
+                    </p:cNvSpPr>
+                    <p:nvPr>
+                        <p:ph type="body" idx="1"/>
+                    </p:nvPr>
+                </p:nvSpPr>
+                <p:spPr/>
+                <p:txBody>
+                    <a:bodyPr/>
+                    <a:lstStyle/>
+                    <a:p>
+                        <a:r>
+                            <a:rPr lang="en-US"/>
+                            <a:t>{combined_notes}</a:t>
+                        </a:r>
+                    </a:p>
+                </p:txBody>
+            </p:sp>
+        </p:spTree>
+    </p:cSld>
+</p:notes>"""
+    
+    try:
+        # Add notes slide to zip
+        zout.writestr(notes_name, notes_xml.encode('utf-8'))
+    except Exception:
+        # If notes creation fails, continue without notes
+        pass
+
 def batch_translate(client, model: str, items, glossary):
     """Translate list of strings JA->EN. Returns list of translations in order.
     Uses GPT-5 reasoning model with deep thinking for best fidelity.
@@ -428,14 +584,48 @@ def batch_translate(client, model: str, items, glossary):
             # Apply expansion policy if text is too long
             if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
                 processed_out = []
+                notes_content = []
+                
                 for i, (original, translated) in enumerate(zip(items, out)):
                     expansion_ratio = calculate_expansion_ratio(original, translated)
-                    # Apply compression for high expansion ratios
-                    if expansion_ratio > 1.5:  # Configurable threshold
+                    content_type = "bullet"  # Default; could be enhanced to detect titles/tables
+                    
+                    # Define thresholds by content type
+                    threshold = 1.8 if "title" in original.lower() else (1.2 if "table" in original.lower() else 1.4)
+                    
+                    if expansion_ratio > threshold:
+                        # Stage 1: Try compression first
                         condensed = condense_text_block(client, model, translated, target_ratio=0.85)
-                        processed_out.append(condensed)
+                        new_ratio = calculate_expansion_ratio(original, condensed)
+                        
+                        if new_ratio > threshold:
+                            # Stage 2: Spill to Notes
+                            stub_text, spilled_content = spill_to_notes(condensed, content_type)
+                            
+                            # Verify content integrity
+                            if verify_content_integrity(original, stub_text, spilled_content, glossary or {}):
+                                processed_out.append(stub_text)
+                                notes_content.append(spilled_content)
+                            else:
+                                # Integrity check failed, use condensed version without spill
+                                processed_out.append(condensed)
+                                notes_content.append("")
+                        else:
+                            # Compression worked, no spill needed
+                            processed_out.append(condensed)
+                            notes_content.append("")
                     else:
+                        # No intervention needed
                         processed_out.append(translated)
+                        notes_content.append("")
+                
+                # Store notes content globally for PPTX write-back
+                # Map original text to notes content for lookup during processing
+                global _slide_notes_content
+                for original, notes in zip(items, notes_content):
+                    if notes.strip():
+                        _slide_notes_content[original] = notes
+                        
                 return processed_out
             else:
                 return out
@@ -449,13 +639,38 @@ def batch_translate(client, model: str, items, glossary):
                 # Apply expansion policy for fallback path too
                 if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
                     processed_out = []
+                    notes_content = []
+                    
                     for i, (original, translated) in enumerate(zip(items, out)):
                         expansion_ratio = calculate_expansion_ratio(original, translated)
-                        if expansion_ratio > 1.5:
+                        content_type = "bullet"
+                        threshold = 1.8 if "title" in original.lower() else (1.2 if "table" in original.lower() else 1.4)
+                        
+                        if expansion_ratio > threshold:
                             condensed = condense_text_block(client, model, translated, target_ratio=0.85)
-                            processed_out.append(condensed)
+                            new_ratio = calculate_expansion_ratio(original, condensed)
+                            
+                            if new_ratio > threshold:
+                                stub_text, spilled_content = spill_to_notes(condensed, content_type)
+                                if verify_content_integrity(original, stub_text, spilled_content, glossary or {}):
+                                    processed_out.append(stub_text)
+                                    notes_content.append(spilled_content)
+                                else:
+                                    processed_out.append(condensed)
+                                    notes_content.append("")
+                            else:
+                                processed_out.append(condensed)
+                                notes_content.append("")
                         else:
                             processed_out.append(translated)
+                            notes_content.append("")
+                    
+                    # Store notes content globally
+                    global _slide_notes_content
+                    for original, notes in zip(items, notes_content):
+                        if notes.strip():
+                            _slide_notes_content[original] = notes
+                    
                     return processed_out
                 else:
                     return out
@@ -569,6 +784,17 @@ def main():
                 if changed:
                     _ensure_autofit(root)
                     data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                    
+                    # Process notes content for this slide
+                    slide_notes = []
+                    for p in root.iter(A_NS + "p"):
+                        orig_text = normalize_para_text(p)
+                        if orig_text in _slide_notes_content:
+                            slide_notes.append(_slide_notes_content[orig_text])
+                    
+                    # Add notes to slide if any content was spilled
+                    if slide_notes:
+                        add_notes_to_slide(zout, name, slide_notes)
 
                 # Recalc after
                 root2 = ET.fromstring(data)
