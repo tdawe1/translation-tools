@@ -23,6 +23,7 @@ Override with --batch N (8-24 recommended range).
 Env:
   OPENAI_API_KEY must be set.
 """
+import asyncio
 import argparse, json, os, re, shutil, sys, time, zipfile, logging
 from xml.etree import ElementTree as ET
 from pathlib import Path
@@ -70,7 +71,7 @@ except ImportError:
 
 # ---- OpenAI client (official library) ----
 try:
-    from openai import OpenAI
+    from openai import OpenAI, AsyncOpenAI
 except Exception:
     print("ERROR: The 'openai' package is required. Install via: pip install openai", file=sys.stderr)
     raise
@@ -266,6 +267,18 @@ def _use_responses_api(model: str) -> bool:
     # Prefer Responses API for latest models like gpt-5 family
     return m.startswith("gpt-5") or os.getenv("OPENAI_USE_RESPONSES") == "1"
 
+def make_array_schema(expected_len: int | None):
+    """Build a strict JSON Schema for string arrays."""
+    return {
+        "name": "BatchArrayOfStrings",
+        "schema": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1
+        },
+        "strict": True
+    }
+
 def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
     # OpenAI Responses API with GPT-5 reasoning model
     try:
@@ -303,15 +316,91 @@ def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, t
         raise
 
 def _chat_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-        ],
-        temperature=temperature,
-    )
+    """Sync version with response_format fallback."""
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        # Fallback: schema in prompt
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt + "\nReturn ONLY a JSON array."},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=temperature,
+        )
     return resp.choices[0].message.content.strip()
+
+async def _chat_create_async(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
+    """Async version with response_format fallback."""
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        # Fallback: schema in prompt
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt + "\nReturn ONLY a JSON array."},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=temperature,
+        )
+    return resp.choices[0].message.content.strip()
+
+async def _responses_create_compat_async(aclient, *, model, input, temperature, json_schema, max_output_tokens):
+    """Async Responses API wrapper with JSON schema fallback."""
+    try:
+        resp = await aclient.responses.create(
+            model=model,
+            input=input,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            response_format={"type": "json_schema", "json_schema": json_schema, "strict": True},
+        )
+    except TypeError as e:
+        if "response_format" in str(e):
+            # Fallback: inline schema in prompt
+            schema_text = f"Return ONLY a valid JSON value matching this JSON Schema:\n{json.dumps(json_schema, indent=2)}"
+            fallback_input = input.copy()
+            if fallback_input and len(fallback_input) > 0:
+                fallback_input[0]["content"] = schema_text + "\n\n" + fallback_input[0]["content"]
+            
+            resp = await aclient.responses.create(
+                model=model,
+                input=fallback_input,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
+        else:
+            raise
+    
+    # Extract content from response
+    content = getattr(resp, "output_text", None)
+    if not content and getattr(resp, "output", None):
+        try:
+            content = resp.output[0].content[0].text
+        except Exception:
+            content = None
+    if not content and getattr(resp, "choices", None):
+        content = resp.choices[0].message.content
+    
+    return content.strip() if content else ""
 
 def _extract_json_array(s: str, expected_len: int):
     import json, re
@@ -989,6 +1078,182 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
 
     return items
 
+async def translate_batch(items, attempt=1, args=None, client=None, model=None, glossary=None, idx=None, json_debug_dir=None):
+    """Translate a single batch with retry and split logic."""
+    items_masked, maps = zip(*[mask_fragile(x) for x in items]) if items else ([], [])
+    
+    style_guide = build_style_guide_text(
+        os.getenv("STYLE_PRESET", "gengo"), os.getenv("STYLE_GUIDE_FILE")
+    )
+    sys_prompt = make_producer_prompt(items, style_guide, glossary)
+    user_payload = {
+        "glossary": glossary or {},
+        "strings": list(items_masked),
+        "instructions": ["Return ONLY a JSON array of translated strings in the same order.", "No code fences, no commentary."],
+    }
+    
+    temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.6"))
+    max_output_tokens = args.max_output_tokens or min(4096, 80 * len(items))
+    
+    # Build JSON schema
+    json_schema = make_array_schema(len(items))
+    
+    # Prepare input for responses API
+    input_messages = [
+        {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
+        {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
+    ]
+    
+    try:
+        # Try responses API first
+        if _use_responses_api(model):
+            content = await _responses_create_compat_async(
+                client, model=model, input=input_messages, 
+                temperature=temperature, json_schema=json_schema, 
+                max_output_tokens=max_output_tokens
+            )
+        else:
+            # Fallback to chat completions
+            content = await _chat_create_async(client, model, sys_prompt, user_payload, temperature)
+        
+        # Extract JSON array
+        data = _extract_json_array(content, len(items))
+        if data:
+            out = [unmask_fragile(str(y), maps[i]) for i, y in enumerate(data)]
+            logging.info(f"[Batch {idx}] Completed {len(out)} items")
+            return {"idx": idx, "items": items, "translations": out}
+        
+        # If we get here, JSON parsing failed
+        raise ValueError("Failed to extract valid JSON array")
+        
+    except Exception as e:
+        # Write debug artifacts
+        if json_debug_dir:
+            os.makedirs(json_debug_dir, exist_ok=True)
+            debug_file = os.path.join(json_debug_dir, f"batch_{idx}_attempt_{attempt}_raw.txt")
+            schema_file = os.path.join(json_debug_dir, f"batch_{idx}_attempt_{attempt}_schema.json")
+            prompt_file = os.path.join(json_debug_dir, f"batch_{idx}_attempt_{attempt}_prompt.txt")
+            
+            with open(debug_file, "w", encoding="utf-8") as f:
+                f.write(content if 'content' in locals() else str(e))
+            with open(schema_file, "w", encoding="utf-8") as f:
+                json.dump(json_schema, f, indent=2)
+            with open(prompt_file, "w", encoding="utf-8") as f:
+                f.write(sys_prompt)
+        
+        # Retry logic
+        if attempt <= args.max_retries:
+            logging.warning(f"[Batch {idx}] Attempt {attempt} failed, retrying: {e}")
+            await asyncio.sleep(0.5 * attempt)  # Brief backoff
+            return await translate_batch(items, attempt + 1, args, client, model, glossary, idx, json_debug_dir)
+        
+        # Split logic
+        elif args.on_batch_fail == "split" and len(items) > 1:
+            logging.info(f"[Batch {idx}] Splitting batch of {len(items)} items after {args.max_retries} failed attempts")
+            mid = len(items) // 2
+            left_items = items[:mid]
+            right_items = items[mid:]
+            
+            # Process both halves
+            left_result = await translate_batch(left_items, 1, args, client, model, glossary, f"{idx}_L", json_debug_dir)
+            right_result = await translate_batch(right_items, 1, args, client, model, glossary, f"{idx}_R", json_debug_dir)
+            
+            # Combine results
+            combined_items = left_result["items"] + right_result["items"]
+            combined_translations = left_result["translations"] + right_result["translations"]
+            
+            return {"idx": idx, "items": combined_items, "translations": combined_translations}
+        
+        else:
+            raise ValueError(f"Failed to get valid JSON for batch {idx} after {args.max_retries} attempts")
+
+async def run_async_translation(client, model, missing, glossary, batch_size, concurrency, args):
+    """Run concurrent batch translations with robust error handling."""
+    # Set up debug directory
+    if args.json_debug_dir is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        json_debug_dir = f"run-{timestamp}/json_failures"
+    else:
+        json_debug_dir = args.json_debug_dir
+    
+    os.makedirs(json_debug_dir, exist_ok=True)
+    
+    sem = asyncio.Semaphore(concurrency)
+    
+    async def limited_batch(items, idx):
+        async with sem:
+            return await translate_batch(items, 1, args, client, model, glossary, idx, json_debug_dir)
+    
+    tasks = []
+    for i in range(0, len(missing), batch_size):
+        batch = missing[i:i+batch_size]
+        task = limited_batch(batch, i // batch_size)
+        tasks.append(task)
+    
+    results = await asyncio.gather(*tasks)
+    
+    # Reassemble in order
+    cache_updates = {}
+    for result in sorted(results, key=lambda x: x["idx"]):
+        for item, trans in zip(result["items"], result["translations"]):
+            cache_updates[item] = trans
+    
+    return cache_updates
+
+def estimate_batch_size(model: str, avg_len: float, max_array_items: int = 20) -> int:
+    """Auto-size batch based on model and item length."""
+    if "mini" in model.lower():
+        target_tokens, fallback = 8000, 14
+    else:
+        target_tokens, fallback = 10000, 12
+    
+    if avg_len > 0:
+        tokens_per_item = avg_len * 2.5 + 50
+        batch = int(target_tokens / tokens_per_item)
+    else:
+        batch = fallback
+    
+    return max(8, min(max_array_items, batch))
+
+def warm_pass(client, warm_model, missing, glossary, batch_size):
+    """Prefill cache with cheaper model."""
+    print(f"Warm pass with {warm_model}: {len(missing)} items")
+    cache_updates = {}
+    
+    i = 0
+    while i < len(missing):
+        batch = missing[i:i+batch_size]
+        out = batch_translate(client, warm_model, batch, glossary)
+        for s, t in zip(batch, out):
+            cache_updates[s] = t
+        i += batch_size
+        print(f"Warm: {i}/{len(missing)}")
+    
+    return cache_updates
+
+def get_flagged_items(cache, reviewer_results=None):
+    """Get items flagged by reviewer for upgrade."""
+    # Simplified: would parse reviewer JSON for real flagged items
+    # For now, return empty set
+    return set()
+
+def upgrade_pass(client, model, flagged, glossary, batch_size):
+    """Retranslate only flagged items."""
+    if not flagged:
+        return {}
+    
+    print(f"Upgrade pass: {len(flagged)} flagged items")
+    flagged_list = list(flagged)
+    cache_updates = {}
+    
+    for i in range(0, len(flagged_list), batch_size):
+        batch = flagged_list[i:i+batch_size]
+        out = batch_translate(client, model, batch, glossary)
+        for s, t in zip(batch, out):
+            cache_updates[s] = t
+    
+    return cache_updates
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True, help="Input PPTX")
@@ -1002,8 +1267,17 @@ def main():
     ap.add_argument("--slides", default=None, help="Slide range, e.g., '1-6'")
     ap.add_argument("--style-preset", default="gengo", choices=["gengo","minimal"], help="Style preset to load into prompts (default: gengo)")
     ap.add_argument("--style-file", default=None, help="Path to custom style guide file")
+    ap.add_argument("--concurrency", type=int, default=1, help="Number of concurrent API requests")
+    ap.add_argument("--warm-with", default=None, help="Model for warm pass (e.g., gpt-4o-mini)")
+    ap.add_argument("--upgrade-flagged", action="store_true", help="Retranslate only reviewer-flagged items")
+    ap.add_argument("--auto-batch", action="store_true", help="Auto-size batches based on model")
     ap.add_argument("--fresh", action="store_true", help="Backup existing output files with timestamps before creating new ones")
     ap.add_argument("--offline", action="store_true", help="Run in offline mode using mock translations for testing")
+    ap.add_argument("--max-retries", type=int, default=2, help="Number of retry attempts before splitting batch (default: 2)")
+    ap.add_argument("--on-batch-fail", choices=["split", "abort"], default="split", help="Action on batch failure: split or abort (default: split)")
+    ap.add_argument("--json-debug-dir", default=None, help="Directory for JSON failure debug artifacts (default: run-<timestamp>/json_failures)")
+    ap.add_argument("--max-array-items", type=int, default=20, help="Maximum array items for auto-batch (default: 20)")
+    ap.add_argument("--max-output-tokens", type=int, default=None, help="Maximum output tokens (default: auto-calculated)")
     args = ap.parse_args()
     
     # Backup existing files if --fresh flag is used  
@@ -1026,6 +1300,8 @@ def main():
         if len(parts) == 2:
             start, end = int(parts[0]), int(parts[1])
             slide_range = set(range(start, end + 1))
+
+    args.concurrency = max(1, args.concurrency)
 
     # Skip API setup in offline mode
     if args.offline:
@@ -1071,102 +1347,68 @@ def main():
     logging.info(f"Found {len(src_strings)} Japanese strings, {len(uniq)} unique")
     logging.info(f"Cache has {len(cache)} entries, {len(missing)} strings need translation")
 
-    # Auto-sizing batch logic based on model and content
-    def calculate_optimal_batch_size(model: str, avg_tokens_per_item: int = 50) -> int:
-        """Calculate optimal batch size based on model and estimated token usage."""
-        # Model-specific token targets
-        if model == "gpt-4o-mini":
-            TARGET_REQ_TOKENS = 8_000
-        elif model.startswith("gpt-4o-"):
-            TARGET_REQ_TOKENS = 10_000
-        else:
-            TARGET_REQ_TOKENS = 8_000  # Conservative default
-        
-        MAX_ARRAY_ITEMS = 24  # Keep JSON outputs manageable
-        
-        # Estimate tokens (rough calculation)
-        prefix_tokens = 1500  # System prompt + schema + glossary (often cached)
-        tokens_per_block = avg_tokens_per_item * 2  # Input + expected output
-        
-        raw = int((TARGET_REQ_TOKENS - prefix_tokens) / tokens_per_block)
-        batch_size = max(8, min(MAX_ARRAY_ITEMS, raw))  # Clamp to 8..24
-        
-        return batch_size
-    
-    # Use auto-sizing if no explicit batch size given, or validate the provided size
-    if args.batch == 40:  # Default value, use auto-sizing
-        optimal_batch = calculate_optimal_batch_size(args.model)
-        logging.info(f"Auto-calculated optimal batch size: {optimal_batch} for model {args.model}")
-        args.batch = optimal_batch
-    else:
-        # Validate user-provided batch size
-        optimal_batch = calculate_optimal_batch_size(args.model)
-        if args.batch > 24:
-            logging.warning(f"Batch size {args.batch} > 24 may cause JSON truncation. Recommended: {optimal_batch}")
-        elif args.batch < 8:
-            logging.warning(f"Batch size {args.batch} < 8 may be inefficient. Recommended: {optimal_batch}")
-    
-    # ETA estimation setup
-    from eta import ETAEstimator, fmt_hms
-    eta = ETAEstimator(alpha=0.25)
-    start = time.time()
-    total_batches = (len(missing) + args.batch - 1) // args.batch
-    total_items = len(missing)
-    processed_items = 0
-    retry_count = 0
+    batch_size = args.batch
+    if args.auto_batch and missing:
+        avg_len = sum(len(s) for s in missing) / len(missing)
+        batch_size = estimate_batch_size(args.model, avg_len, args.max_array_items)
+        print(f"Auto-batch: size={batch_size} (avg_len={avg_len:.1f})")
 
-    i = 0
-    calls = 0
-    while i < len(missing):
-        batch = missing[i:i+args.batch]
-        
-        # Time the batch translation with retry handling
-        t0 = time.time()
-        batch_success = False
-        attempt = 0
-        
-        while not batch_success and attempt < 3:
+    # Warm pass
+    if args.warm_with and args.warm_with != args.model:
+        uncached = [s for s in missing if s not in cache]
+        if uncached:
+            warm_batch = batch_size
+            if args.auto_batch:
+                avg_len = sum(len(s) for s in uncached) / len(uncached)
+                warm_batch = estimate_batch_size(args.warm_with, avg_len, args.max_array_items)
+            updates = warm_pass(client, args.warm_with, uncached, glossary, warm_batch)
+            cache.update(updates)
+            with open(args.cache, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+
+    # Upgrade pass  
+    if args.upgrade_flagged:
+        flagged = get_flagged_items(cache)
+        if flagged:
+            updates = upgrade_pass(client, args.model, flagged, glossary, batch_size)
+            cache.update(updates)
+            with open(args.cache, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+        # Refresh missing list
+        missing = [s for s in uniq if s not in cache or cache.get(s) == s]
+
+    # Main translation
+    calls = 0  # Initialize calls counter
+    if missing:
+        if args.concurrency > 1:
+            # Async path
+            print(f"Async translation: {len(missing)} items, concurrency={args.concurrency}")
+            if base_url:
+                async_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            else:
+                async_client = AsyncOpenAI(api_key=api_key)
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             try:
+                updates = loop.run_until_complete(
+                    run_async_translation(async_client, args.model, missing, glossary, batch_size, args.concurrency, args)
+                )
+                cache.update(updates)
+                calls = (len(missing) + batch_size - 1) // batch_size  # Estimate calls for async
+            finally:
+                loop.close()
+        else:
+            # Sync path (existing)
+            i = 0
+            while i < len(missing):
+                batch = missing[i:i+batch_size]
                 out = batch_translate(client, args.model, batch, glossary, args.offline)
-                batch_success = True
-            except Exception as e:
-                attempt += 1
-                retry_count += 1
-                logging.warning(f"Batch failed (attempt {attempt}/3): {e}")
-                
-                # Check retry rate and adjust batch size if needed
-                retry_rate = retry_count / max(1, calls + 1)
-                if retry_rate > 0.05 and args.batch > 8:  # >5% retries
-                    new_batch_size = max(8, int(args.batch * 0.75))  # Drop by 25%
-                    logging.warning(f"High retry rate ({retry_rate:.1%}), reducing batch size: {args.batch} → {new_batch_size}")
-                    args.batch = new_batch_size
-                    total_batches = (len(missing) + args.batch - 1) // args.batch
-                
-                if attempt < 3:
-                    time.sleep(1 + attempt)  # Backoff
-                else:
-                    logging.error(f"Batch failed after 3 attempts, skipping batch")
-                    out = ["[TRANSLATION_FAILED]"] * len(batch)
-        
-        t1 = time.time()
-        
-        # Update ETA estimator
-        batch_size = len(batch)
-        eta.update((t1 - t0) / max(1, batch_size))
-        processed_items += batch_size
-        remaining_items = total_items - processed_items
-        est_seconds = (remaining_items * (eta.sec_per_item or 0))
-        
-        calls += 1
-        for s, t in zip(batch, out):
-            cache[s] = t
-        
-        # Display progress with retry info
-        elapsed = time.time() - start
-        retry_info = f" | Retries: {retry_count}" if retry_count > 0 else ""
-        logging.info(f"[{calls}/{total_batches}] Processed {processed_items}/{total_items} items | ETA {fmt_hms(est_seconds)} | Elapsed {fmt_hms(elapsed)}{retry_info}")
-        
-        i += args.batch
+                calls += 1
+                for s, t in zip(batch, out):
+                    cache[s] = t
+                i += batch_size
+                print(f"Progress: {min(i, len(missing))}/{len(missing)}")
 
     with open(args.cache, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
