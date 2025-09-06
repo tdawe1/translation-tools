@@ -157,7 +157,9 @@ def set_para_text(p_el, new_text: str):
         if child.tag == br_tag:
             p_el.remove(child)
     for r in runs:
-        t = r.find(t_tag) or ET.SubElement(r, t_tag)
+        t = r.find(t_tag)
+        if t is None:
+            t = ET.SubElement(r, t_tag)
         t.text = ""
 
     # Tokenize: keep whitespace; use None sentinel for newline
