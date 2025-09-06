@@ -264,6 +264,53 @@ def _ensure_autofit(root):
         if bodyPr.find(A_NS + "normAutofit") is None and bodyPr.find(A_NS + "spAutoFit") is None:
             ET.SubElement(bodyPr, A_NS + "normAutofit")
 
+def _ensure_autofit_on_tree(root, mode: str, font_scale_min: int, line_spacing_pct: int, tight_margins: bool):
+    """Enable slide-wide text autofit & spacing. Safe, mechanical; does not change wording."""
+    bodyPr_tag = A_NS + "bodyPr"
+    norm_tag   = A_NS + "normAutofit"
+    shape_tag  = A_NS + "spAutoFit"
+    no_tag     = A_NS + "noAutofit"
+    p_tag      = A_NS + "p"
+    pPr_tag    = A_NS + "pPr"
+    lnSpc_tag  = A_NS + "lnSpc"
+    spcPct_tag = A_NS + "spcPct"
+
+    # 1) Per text frame: set autofit and tighten insets if requested
+    for bp in list(root.iter(bodyPr_tag)):
+        # remove conflicting children
+        for ch in list(bp):
+            if ch.tag in (norm_tag, shape_tag, no_tag):
+                bp.remove(ch)
+        if mode == "none":
+            bp.append(ET.Element(no_tag))
+        elif mode == "shape":
+            bp.append(ET.Element(shape_tag))
+        else:
+            na = ET.Element(norm_tag)
+            # allow PowerPoint to shrink fonts and line spacing to fit
+            na.set("fontScale", str(font_scale_min))           # e.g., 90000 = 90%
+            na.set("lnSpcReduction", "12000")                  # ~12% line-space reduction headroom
+            bp.append(na)
+        if tight_margins:
+            # Insets: values are EMUs; these are conservative, non-zero margins
+            bp.set("lIns", "45720")   # ~0.05"
+            bp.set("rIns", "45720")
+            bp.set("tIns", "22860")   # ~0.025"
+            bp.set("bIns", "22860")
+
+    # 2) Normalize line spacing to a fixed percentage (e.g., 100%)
+    for p in list(root.iter(p_tag)):
+        pPr = p.find(pPr_tag)
+        if pPr is None:
+            pPr = ET.SubElement(p, pPr_tag)
+        ln = pPr.find(lnSpc_tag)
+        if ln is None:
+            ln = ET.SubElement(pPr, lnSpc_tag)
+        sp = ln.find(spcPct_tag)
+        if sp is None:
+            sp = ET.SubElement(ln, spcPct_tag)
+        sp.set("val", str(line_spacing_pct))
+
 def _use_responses_api(model: str) -> bool:
     m = (model or "").lower()
     # Prefer Responses API for latest models like gpt-5 family
@@ -1280,6 +1327,14 @@ def main():
     ap.add_argument("--json-debug-dir", default=None, help="Directory for JSON failure debug artifacts (default: run-<timestamp>/json_failures)")
     ap.add_argument("--max-array-items", type=int, default=20, help="Maximum array items for auto-batch (default: 20)")
     ap.add_argument("--max-output-tokens", type=int, default=None, help="Maximum output tokens (default: auto-calculated)")
+    ap.add_argument("--autofit-mode", choices=["norm","shape","none"], default="norm",
+        help="norm = shrink text to fit shape; shape = expand shape to fit text; none = disable autofit")
+    ap.add_argument("--font-scale-min", type=int, default=90000,
+        help="Minimum font scale (percent * 1000) for norm autofit; 90000 = 90%")
+    ap.add_argument("--line-spacing-pct", type=int, default=100000,
+        help="Paragraph line spacing percentage (100000 = 100%)")
+    ap.add_argument("--tight-margins", action="store_true",
+        help="Reduce text insets (left/right ≈0.5em, top/bottom ≈0.25em) to gain space")
     args = ap.parse_args()
     
     # Backup existing files if --fresh flag is used  
@@ -1463,6 +1518,15 @@ def main():
                         apply_deck_formatting_profile(root)
                     
                     _ensure_autofit(root)
+                    
+                    # After text replacement, make layout robust against EN overflow
+                    _ensure_autofit_on_tree(
+                        root,
+                        args.autofit_mode,
+                        args.font_scale_min,
+                        args.line_spacing_pct,
+                        args.tight_margins,
+                    )
                     data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
                     
                     # Process notes content for this slide
