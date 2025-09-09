@@ -69,3 +69,17 @@ translation_cache*.json
 *.csv
 *.log
 prompt*.md
+
+# ensured by purge_history
+archived_runs/**
+inputs/**
+outputs/**
+audits/**
+backup/**
+comparisons/**
+data/**
+glossary.json
+translation_cache*.json
+*.csv
+*.log
+prompt*.md
