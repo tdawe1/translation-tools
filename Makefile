@@ -10,10 +10,10 @@ test:
 	@echo "No tests wired yet."
 
 clean:
-	@rm -f deck_tone.json
+	@./scripts/cleanup.sh aggressive
 
 estimate:
-	@./tools/estimate_cost.py --pricing pricing.example.json --producer openai:gpt-5 --reviewer openai:gpt-5-mini --batch-size 16 --prefix-file ./scripts/translate_pptx_inplace.py --also anthropic:claude-sonnet-4 google:gemini-1.5-pro
+	@./tools/estimate_cost.py inputs/68b42f175c652_f711fcda865b11f0b6cecace4a312dcf_en_final_offline_v2.pptx --pricing pricing.example.json --producer openai:gpt-5 --reviewer openai:gpt-5-mini --batch-size 16 --prefix-file ./scripts/translate_pptx_inplace.py --also anthropic:claude-sonnet-4 google:gemini-1.5-pro
 
 derive-tone:
-	@./tools/derive_deck_tone.py
+	@./tools/derive_deck_tone.py inputs/68b42f175c652_f711fcda865b11f0b6cecace4a312dcf_en_final_offline_v2.pptx
