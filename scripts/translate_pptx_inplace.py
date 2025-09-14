@@ -1322,6 +1322,7 @@ def main():
     ap.add_argument("--auto-batch", action="store_true", help="Auto-size batches based on model")
     ap.add_argument("--fresh", action="store_true", help="Backup existing output files with timestamps before creating new ones")
     ap.add_argument("--offline", action="store_true", help="Run in offline mode using mock translations for testing")
+    ap.add_argument("--cache-only", action="store_true", help="Do not call any API and do not mock; require all translations to exist in cache")
     ap.add_argument("--max-retries", type=int, default=2, help="Number of retry attempts before splitting batch (default: 2)")
     ap.add_argument("--on-batch-fail", choices=["split", "abort"], default="split", help="Action on batch failure: split or abort (default: split)")
     ap.add_argument("--json-debug-dir", default=None, help="Directory for JSON failure debug artifacts (default: run-<timestamp>/json_failures)")
@@ -1360,9 +1361,11 @@ def main():
 
     args.concurrency = max(1, args.concurrency)
 
-    # Skip API setup in offline mode
-    if args.offline:
+    # Skip API setup in offline mode or cache-only mode
+    if args.offline or args.cache_only:
         logging.info("Running in OFFLINE MODE - using mock translations")
+        if args.cache_only:
+            logging.info("Cache-only mode: will not translate any missing strings; cache must be complete")
         client = None  # No API client needed
     else:
         api_key = os.getenv("OPENAI_API_KEY")
@@ -1404,6 +1407,26 @@ def main():
     logging.info(f"Found {len(src_strings)} Japanese strings, {len(uniq)} unique")
     logging.info(f"Cache has {len(cache)} entries, {len(missing)} strings need translation")
 
+    # In cache-only mode, require that there are no missing items
+    if args.cache_only:
+        if missing:
+            sample = missing[:10]
+            logging.error(
+                "cache-only mode: %d strings missing from cache. Export them with 'python scripts/export_missing_jp.py --in %s --out missing_jp.json --cache %s', translate externally, then merge with 'python scripts/merge_into_cache.py --updates translated.json --cache %s'",
+                len(missing), args.inp, args.cache, args.cache
+            )
+            # Also write a convenience file listing missing items
+            try:
+                miss_path = "missing_jp.cache_only.json"
+                with open(miss_path, "w", encoding="utf-8") as f:
+                    json.dump({s: "" for s in missing}, f, ensure_ascii=False, indent=2)
+                print(f"Wrote template of missing items: {miss_path}")
+            except Exception:
+                pass
+            sys.exit(3)
+        else:
+            logging.info("cache-only mode: cache covers all strings; proceeding without any API/mocks")
+
     batch_size = args.batch
     if args.auto_batch and missing:
         avg_len = sum(len(s) for s in missing) / len(missing)
@@ -1412,19 +1435,22 @@ def main():
 
     # Warm pass
     if args.warm_with and args.warm_with != args.model:
-        uncached = [s for s in missing if s not in cache]
-        if uncached:
-            warm_batch = batch_size
-            if args.auto_batch:
-                avg_len = sum(len(s) for s in uncached) / len(uncached)
-                warm_batch = estimate_batch_size(args.warm_with, avg_len, args.max_array_items)
-            updates = warm_pass(client, args.warm_with, uncached, glossary, warm_batch)
-            cache.update(updates)
-            with open(args.cache, "w", encoding="utf-8") as f:
-                json.dump(cache, f, ensure_ascii=False, indent=2)
+        if args.cache_only:
+            logging.info("cache-only mode: skipping warm pass")
+        else:
+            uncached = [s for s in missing if s not in cache]
+            if uncached:
+                warm_batch = batch_size
+                if args.auto_batch:
+                    avg_len = sum(len(s) for s in uncached) / len(uncached)
+                    warm_batch = estimate_batch_size(args.warm_with, avg_len, args.max_array_items)
+                updates = warm_pass(client, args.warm_with, uncached, glossary, warm_batch)
+                cache.update(updates)
+                with open(args.cache, "w", encoding="utf-8") as f:
+                    json.dump(cache, f, ensure_ascii=False, indent=2)
 
     # Upgrade pass  
-    if args.upgrade_flagged:
+    if args.upgrade_flagged and not args.cache_only:
         flagged = get_flagged_items(cache)
         if flagged:
             updates = upgrade_pass(client, args.model, flagged, glossary, batch_size)
@@ -1436,7 +1462,7 @@ def main():
 
     # Main translation
     calls = 0  # Initialize calls counter
-    if missing:
+    if missing and not args.cache_only:
         if args.concurrency > 1:
             # Async path
             print(f"Async translation: {len(missing)} items, concurrency={args.concurrency}")
@@ -1466,6 +1492,8 @@ def main():
                     cache[s] = t
                 i += batch_size
                 print(f"Progress: {min(i, len(missing))}/{len(missing)}")
+    elif args.cache_only:
+        logging.info("cache-only mode: no translation performed; using cache as-is")
 
     with open(args.cache, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)

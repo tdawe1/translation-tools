@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=true
+      - SECRET_KEY=your-secret-key-change-this-in-production
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ALLOWED_ORIGINS=["http://localhost:3000", "http://localhost:3001"]
+    volumes:
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ../scripts:/app/scripts
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  frontend:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../frontend:/app
+    command: sh -c "npm install && npm run dev"
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - backend
+    restart: unless-stopped
+    profiles:
+      - frontend

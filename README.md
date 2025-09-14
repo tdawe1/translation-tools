@@ -1,6 +1,6 @@
-# 🚀 PowerPoint Translation Pipeline (JA→EN)
+# 🚀 Document Translation Pipeline (JA→EN)
 
-A production-ready translation system for converting Japanese PowerPoint presentations to English while preserving layout, formatting, and visual elements.
+A production-ready translation system for converting Japanese PowerPoint presentations **and PDF documents** to English while preserving layout, formatting, and visual elements.
 
 <details>
 <summary><strong>📊 Project Status Summary (Today)</strong></summary>
@@ -227,6 +227,7 @@ If you want, I can turn this into three small PRs: (1) Drive poller + job runner
 ## ✨ Features
 
 ### 🎯 **Production-Ready Translation**
+- **Multi-format support**: PowerPoint presentations AND PDF documents
 - **Smart batch sizing**: Auto-optimizes API requests per model
 - **Comprehensive logging**: Real-time progress with ETA estimates  
 - **Robust error handling**: Auto-retry with intelligent backoff
@@ -242,6 +243,8 @@ If you want, I can turn this into three small PRs: (1) Drive poller + job runner
 - **Translation caching**: Avoids re-translating identical content
 - **Bilingual output**: CSV mapping for quality assurance
 - **Performance metrics**: Detailed audit reports and statistics
+- **Page range support**: Translate specific sections of PDFs
+- **Fallback extraction**: PyMuPDF + pdfplumber for complex layouts
 - **Webhook integration**: Real-time progress tracking (optional)
 
 ## 🚀 Quick Start
@@ -264,6 +267,65 @@ python scripts/translate_pptx_inplace.py \
   --in input.pptx \
   --out output_en.pptx \
   --model gpt-4o-mini
+```
+
+## 📄 PDF Translation
+
+The pipeline now supports Japanese-to-English translation for PDF documents with the same quality and layout preservation as the PPTX system.
+
+### Quick Start - PDF Translation
+
+```bash
+# Basic PDF translation
+python scripts/translate_pdf.py --in document.pdf --out document_en.pdf
+
+# Cost estimation for PDF
+python tools/estimate_cost_pdf.py document.pdf
+
+# Using Makefile (recommended)
+make translate-pdf INPUT=document.pdf OUTPUT=document_en.pdf
+make estimate-pdf PDF_INPUT=document.pdf
+```
+
+### PDF-Specific Features
+
+- **Layout Preservation**: Maintains original formatting, fonts, and positioning
+- **Page Range Support**: Translate specific pages or ranges (e.g., `--pages 1-10`)
+- **Smart Text Extraction**: Uses PyMuPDF with pdfplumber fallback for complex layouts
+- **Japanese Text Detection**: Automatically identifies and extracts Japanese content
+- **Batch Processing**: Same intelligent batching as PPTX for optimal API usage
+- **Cache Integration**: Reuses existing translation cache for cost savings
+
+### PDF Command Line Options
+
+```bash
+python scripts/translate_pdf.py [OPTIONS]
+
+Required:
+  --in INPUT.pdf       Input PDF file
+  --out OUTPUT.pdf     Output translated PDF file
+
+Optional:
+  --model MODEL        AI model (default: gpt-4o-2024-08-06)
+  --pages PAGES        Page range (e.g., 1-10, 5)
+  --glossary FILE      Custom glossary file
+  --cache FILE         Cache file path
+  --cache-only         Use only cached translations
+  --offline            Run in offline mode
+  --verbose            Enable detailed logging
+```
+
+### PDF Cost Estimation
+
+```bash
+# Basic cost estimation
+python tools/estimate_cost_pdf.py document.pdf
+
+# With specific model and pages
+python tools/estimate_cost_pdf.py document.pdf --model openai:gpt-5 --pages 1-20
+
+# Using Makefile
+make estimate-pdf PDF_INPUT=document.pdf MODEL=openai:gpt-5 PAGES=1-20
 ```
 
 ## 🎛️ Production Presets
