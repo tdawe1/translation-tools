@@ -21,7 +21,7 @@ This directory contains targeted DOCX fixtures for testing specific advanced fea
   - Adapter handles merge spans correctly.
 
 ### hyperlinks.docx
-- **Structure**: Paragraphs with hyperlinks to "https://example.com" and "#anchor", styled in blue and underlined.
+- **Structure**: Paragraphs with hyperlinks to "<https://example.com>" and "#anchor", styled in blue and underlined.
 - **Expected Assertions**:
   - Hyperlinks preserved in output DOCX (URLs unchanged).
   - Surrounding text translated, but link text remains as is or translated if needed (depending on policy).
@@ -59,5 +59,8 @@ This directory contains targeted DOCX fixtures for testing specific advanced fea
 - Smoke checks: Load each via Document(fixture_path) and assert no errors; verify text extraction via adapter.
 
 ## Testing Commands
-- Run pytest tests/test_docx_adapter.py::test_load_fixture -k "nested_tables" (adapt as needed).
-- Verify XML: unzip -l fixture.docx | grep document.xml; check for expected elements (e.g., <w:tbl> for tables, <w:hyperlink> for links).
+```bash
+pytest tests/test_docx_adapter.py::test_load_fixture -k "nested_tables"
+unzip -l fixture.docx | grep document.xml
+# Check for expected elements (e.g., <w:tbl> for tables, <w:hyperlink> for links)
+```

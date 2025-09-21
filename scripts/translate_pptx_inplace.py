@@ -755,7 +755,6 @@ def add_notes_to_slide(zout: zipfile.ZipFile, slide_name: str, notes_content: li
 
 def apply_layout_tightening(root, is_aggressive: bool = False):
     """Stage 3: Apply layout optimizations to buy space."""
-    import xml.etree.ElementTree as ET
     
     # Find all text bodies and apply tightening
     for txBody in root.iter(A_NS + "txBody"):

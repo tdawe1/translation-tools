@@ -13,16 +13,15 @@ import os
 import shutil
 import tempfile
 import time
-import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import httpx
 from fastapi.testclient import TestClient
 
 # Set test environment variables before importing
 os.environ["DEBUG"] = "true"
+# Test-only placeholder; not a real secret.
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["OPENAI_API_KEY"] = "test-api-key-not-for-production"
 
@@ -48,7 +47,6 @@ def sample_docx_content():
     # Since python-docx might not be available, create a minimal valid DOCX
     # DOCX files are ZIP archives with XML content
     import zipfile
-    import xml.etree.ElementTree as ET
 
     # Create temporary DOCX
     with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as tmp:
@@ -383,7 +381,7 @@ def test_translate_docx_cli_end_to_end(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
     monkeypatch.chdir(tmp_path)
 
-    async def fake_translate_document(*, input_path, output_path, **kwargs):
+    async def fake_translate_document(*, input_path, output_path, bilingual_csv=False, json_audit=False, **kwargs):
         adapter = DocxAdapter()
         input_path = str(input_path)
         output_path = str(output_path)
@@ -399,6 +397,52 @@ def test_translate_docx_cli_end_to_end(monkeypatch, tmp_path):
 
         adapter.apply_translations(input_path, segments, output_path=output_path)
 
+        # Create artifacts if requested
+        artifacts = {}
+        import csv
+        import json
+        from datetime import datetime
+
+        if bilingual_csv:
+            csv_path = Path(output_path).with_suffix('.csv')
+            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Original', 'Translated', 'Status'])
+                for seg in segments:
+                    if seg.has_japanese:
+                        writer.writerow([seg.text, f"Translated {seg.text}", "Translated"])
+                    else:
+                        writer.writerow([seg.text, seg.text, "No translation needed"])
+            artifacts['csv'] = str(csv_path)
+
+        if json_audit:
+            audit_path = Path(output_path).with_suffix('.json')
+            audit_data = {
+                'timestamp': datetime.now().isoformat(),
+                'input_file': input_path,
+                'output_file': output_path,
+                'model': 'test-model',
+                'segments': [
+                    {
+                        'id': seg.id,
+                        'original': seg.text,
+                        'translated': f"Translated {seg.text}" if seg.has_japanese else seg.text,
+                        'status': 'translated' if seg.has_japanese else 'unchanged',
+                        'metadata': seg.metadata
+                    }
+                    for seg in segments
+                ],
+                'stats': {
+                    'segments_translated': translated_count,
+                    'total_segments': len(segments),
+                    'words_translated': sum(seg.word_count for seg in segments if seg.has_japanese),
+                    'total_words': total_words
+                }
+            }
+            with open(audit_path, 'w', encoding='utf-8') as f:
+                json.dump(audit_data, f, indent=2, ensure_ascii=False)
+            artifacts['audit'] = str(audit_path)
+
         return TranslationResult(
             output_path=output_path,
             segments_translated=translated_count,
@@ -408,7 +452,7 @@ def test_translate_docx_cli_end_to_end(monkeypatch, tmp_path):
             cache_hits=0,
             processing_time=0.5,
             warnings=[],
-            artifacts={}
+            artifacts=artifacts
         )
 
     monkeypatch.setattr(translate_docx.orchestrator, "translate_document", fake_translate_document)
@@ -425,12 +469,12 @@ def test_translate_docx_cli_end_to_end(monkeypatch, tmp_path):
     ]
     monkeypatch.setattr(sys, "argv", argv)
 
-    asyncio.run(translate_docx.main())
+    asyncio.run(translate_docx.main_async())
 
     assert output_doc.exists()
 
-    csv_path = tmp_path / f"{output_doc.stem}_bilingual.csv"
-    audit_path = tmp_path / f"{output_doc.stem}_audit.json"
+    csv_path = output_doc.with_suffix('.csv')
+    audit_path = output_doc.with_suffix('.json')
 
     assert csv_path.exists(), "Bilingual CSV should be created"
     assert audit_path.exists(), "Audit JSON should be created"

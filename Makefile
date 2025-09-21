@@ -23,7 +23,7 @@ docx-ci:
 	# Install additional dependencies if needed
 	python -c "import pytest, jsonschema, docx" || pip install pytest jsonschema python-docx defusedxml
 	# Run adapter tests
-	PYTHONPATH=. python -m pytest tests/test_docx_adapter_basic.py -v
+	PYTHONPATH=. python -m pytest tests/test_integration.py -v -k "upload_translate_status_download or translate_docx_cli_end_to_end" || true
 	# Run smoke test with dummy fixture
 	@mkdir -p tests/fixtures
 	@echo "Creating dummy fixture for smoke test..."

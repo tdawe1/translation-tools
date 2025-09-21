@@ -2,12 +2,9 @@
 """
 Create Set 1 DOCX fixtures for advanced features.
 """
-import os
 from pathlib import Path
 from docx import Document
-from docx.shared import Inches, Pt
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.shared import RGBColor
 
 # Create fixtures directory
@@ -121,7 +118,7 @@ def create_comments_docx():
     doc.add_heading("Comments Fixture", 0)
 
     p = doc.add_paragraph("This is a paragraph with a comment.")
-    run = p.runs[0]
+    _ = p.runs[0]
     # Note: Adding comments requires low-level access or recent python-docx features
     # For simulation, we'll add a simple paragraph
     # In real, use: from docx.oxml import OxmlElement
@@ -129,7 +126,7 @@ def create_comments_docx():
 
     doc.add_paragraph("[Comment here: This is a test comment]")
 
-    p2 = doc.add_paragraph("Another paragraph.")
+    doc.add_paragraph("Another paragraph.")
 
     output_path = fixtures_dir / "comments.docx"
     doc.save(output_path)
@@ -141,7 +138,7 @@ def create_tracked_changes_docx():
     doc = Document()
     doc.add_heading("Tracked Changes Fixture", 0)
 
-    p = doc.add_paragraph("Original text.")
+    doc.add_paragraph("Original text.")
     # Tracked changes are complex; simulate with text
     doc.add_paragraph("[Tracked insertion: New text added]")
     doc.add_paragraph("[Tracked deletion: Old text removed]")
