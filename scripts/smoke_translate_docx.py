@@ -12,7 +12,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 import zipfile
-import xml.etree.ElementTree as ET
+try:
+    from defusedxml.ElementTree import fromstring as safe_fromstring, tostring as safe_tostring
+except ImportError:
+    from xml.etree.ElementTree import fromstring as safe_fromstring, tostring as safe_tostring
 from difflib import SequenceMatcher
 
 def get_structure_xml(docx_path: Path) -> str:
@@ -23,14 +26,14 @@ def get_structure_xml(docx_path: Path) -> str:
             if name.endswith('.xml') and not name.startswith('word/media/'):
                 try:
                     content = z.read(name).decode('utf-8')
-                    root = ET.fromstring(content)
+                    root = safe_fromstring(content)
                     def remove_text(elem):
                         elem.text = None
                         elem.tail = None
                         for child in elem:
                             remove_text(child)
                     remove_text(root)
-                    struct = ET.tostring(root, encoding='unicode', method='xml')
+                    struct = safe_tostring(root, encoding='unicode', method='xml')
                     xml_contents.append(f"--- {name} ---\n{struct}")
                 except Exception:
                     # Skip invalid XML

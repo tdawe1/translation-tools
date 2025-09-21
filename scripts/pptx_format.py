@@ -3,7 +3,10 @@
 Single PPTX formatting profile for consistent slide appearance.
 Applies uniform fonts, sizes, spacing, and layout across entire deck.
 """
-import xml.etree.ElementTree as ET
+try:
+    from defusedxml.ElementTree import fromstring as safe_fromstring, tostring as safe_tostring, Element as ET_Element, SubElement as ET_SubElement
+except ImportError:
+    from xml.etree.ElementTree import fromstring as safe_fromstring, tostring as safe_tostring, Element as ET_Element, SubElement as ET_SubElement
 
 # Namespace constants
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
@@ -34,7 +37,7 @@ def _apply_body_formatting(txBody, is_title=False):
     """Apply text body properties for margins and autofit."""
     bodyPr = txBody.find(A_NS + "bodyPr")
     if bodyPr is None:
-        bodyPr = ET.SubElement(txBody, A_NS + "bodyPr")
+        bodyPr = ET_SubElement(txBody, A_NS + "bodyPr")
     
     # Tight margins for maximum text space (values in EMUs: 1pt = 12700 EMUs)
     bodyPr.set("lIns", "25400")   # Left margin: 2pt  
@@ -47,7 +50,7 @@ def _apply_body_formatting(txBody, is_title=False):
     # Enable shrink-to-fit with sensible limits
     normAutofit = bodyPr.find(A_NS + "normAutofit")
     if normAutofit is None:
-        normAutofit = ET.SubElement(bodyPr, A_NS + "normAutofit")
+        normAutofit = ET_SubElement(bodyPr, A_NS + "normAutofit")
     
     # Set scaling limits to prevent unreadable text
     if is_title:
@@ -61,16 +64,16 @@ def _apply_paragraph_formatting(para, is_title=False):
     """Apply paragraph-level formatting for spacing and indentation."""
     pPr = para.find(A_NS + "pPr")
     if pPr is None:
-        pPr = ET.SubElement(para, A_NS + "pPr")
+        pPr = ET_SubElement(para, A_NS + "pPr")
     
     # Optimize line spacing (110% vs default ~120%)
     lnSpc = pPr.find(A_NS + "lnSpc")
     if lnSpc is None:
-        lnSpc = ET.SubElement(pPr, A_NS + "lnSpc")
+        lnSpc = ET_SubElement(pPr, A_NS + "lnSpc")
     
     spcPct = lnSpc.find(A_NS + "spcPct")
     if spcPct is None:
-        spcPct = ET.SubElement(lnSpc, A_NS + "spcPct")
+        spcPct = ET_SubElement(lnSpc, A_NS + "spcPct")
     
     line_spacing = "105000" if is_title else "110000"  # 105% for titles, 110% for body
     spcPct.set("val", line_spacing)
@@ -116,7 +119,7 @@ def _apply_run_formatting(run, is_title=False):
     """Apply run-level formatting for fonts and sizes."""
     rPr = run.find(A_NS + "rPr")
     if rPr is None:
-        rPr = ET.SubElement(run, A_NS + "rPr")
+        rPr = ET_SubElement(run, A_NS + "rPr")
     
     # Set minimum font sizes (in half-points: 1pt = 100 half-points)
     current_size = rPr.get("sz")
@@ -129,7 +132,7 @@ def _apply_run_formatting(run, is_title=False):
     # Ensure font family is set for consistency
     latin = rPr.find(A_NS + "latin")
     if latin is None:
-        latin = ET.SubElement(rPr, A_NS + "latin")
+        latin = ET_SubElement(rPr, A_NS + "latin")
     
     # Use brand font if not already specified
     if not latin.get("typeface"):
@@ -240,9 +243,9 @@ def format_slide_xml(slide_xml_data: bytes) -> bytes:
     Returns:
         Formatted slide XML bytes
     """
-    root = ET.fromstring(slide_xml_data)
+    root = safe_fromstring(slide_xml_data)
     apply_deck_formatting_profile(root)
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return safe_tostring(root, encoding="utf-8", xml_declaration=True)
 
 def should_apply_formatting(content_changed: bool = True) -> bool:
     """Determine if formatting should be applied based on content changes."""
