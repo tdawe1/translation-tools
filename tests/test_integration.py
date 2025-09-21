@@ -265,7 +265,7 @@ class TestTranslationIntegration:
         assert response.status_code == 400
         assert "Invalid glossary JSON" in response.json()["detail"]
 
-    @patch('backend.app.api.translate.run_translation_job')
+    @patch('backend.app.api.translate.logger')
     def test_translation_error_handling(self, mock_logger, client, sample_docx_content):
         """Test error handling during translation."""
         # Mock the translation to fail
@@ -286,7 +286,7 @@ class TestTranslationIntegration:
             time.sleep(1)
 
             # Check job status
-            status_response = client.get(f"/api/translate/translate/{job_id}")
+            status_response = client.get(f"/api/translate/{job_id}")
             status_data = status_response.json()
             assert status_data["status"] == "failed"
             assert "error" in status_data
