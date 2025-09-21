@@ -1,33 +1,66 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-<w:body>
-<w:tbl>
-<w:tblGrid>
-<w:gridCol w:w="2000"/>
-</w:tblGrid>
-<w:tr>
-<w:tc>
-<w:p>
-<w:r>
-<w:t>Outer</w:t>
-</w:r>
-</w:p>
-<w:tbl>
-<w:tblGrid>
-<w:gridCol w:w="2000"/>
-</w:tblGrid>
-<w:tr>
-<w:tc>
-<w:p>
-<w:r>
-<w:t>Inner</w:t>
-</w:r>
-</w:p>
-</w:tc>
-</w:tr>
-</w:tbl>
-</w:tc>
-</w:tr>
-</w:tbl>
-</w:body>
+  <w:body>
+    <w:tbl>
+      <w:tblGrid>
+        <w:gridCol w:w="3400"/>
+        <w:gridCol w:w="3400"/>
+      </w:tblGrid>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>Outer R0C0</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc>
+          <w:p><w:r><w:t>Outer R0C1</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>Outer R1C0</w:t></w:r></w:p>
+          <w:tbl>
+            <w:tblGrid>
+              <w:gridCol w:w="2000"/>
+              <w:gridCol w:w="2000"/>
+              <w:gridCol w:w="2000"/>
+            </w:tblGrid>
+            <w:tr>
+              <w:tc>
+                <w:p><w:r><w:t>Nested R0C0</w:t></w:r></w:p>
+              </w:tc>
+              <w:tc>
+                <w:p><w:r><w:t>Nested R0C1</w:t></w:r></w:p>
+              </w:tc>
+              <w:tc>
+                <w:p><w:r><w:t>Nested R0C2</w:t></w:r></w:p>
+              </w:tc>
+            </w:tr>
+            <w:tr>
+              <w:tc>
+                <w:p><w:r><w:t>Nested R1C0</w:t></w:r></w:p>
+              </w:tc>
+              <w:tc>
+                <w:p><w:r><w:t>Nested R1C1</w:t></w:r></w:p>
+              </w:tc>
+              <w:tc>
+                <w:p><w:r><w:t>Nested R1C2</w:t></w:r></w:p>
+              </w:tc>
+            </w:tr>
+          </w:tbl>
+        </w:tc>
+        <w:tc>
+          <w:p><w:r><w:t>Outer R1C1</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>Outer R2C0</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc>
+          <w:p><w:r><w:t>Outer R2C1</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:p/>
+    <w:sectPr/>
+  </w:body>
 </w:document>
