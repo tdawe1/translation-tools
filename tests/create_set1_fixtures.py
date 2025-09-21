@@ -2,12 +2,8 @@
 """
 Create Set 1 DOCX fixtures for advanced features.
 """
-import os
-from pathlib import Path
 from docx import Document
-from docx.shared import Inches, Pt
-from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from pathlib import Path
 from docx.shared import RGBColor
 
 # Create fixtures directory
@@ -24,7 +20,6 @@ def create_nested_tables_docx():
     # Outer table
     outer_table = doc.add_table(rows=3, cols=2)
     outer_table.style = "Table Grid"
-    outer_table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
     # Fill outer cells
     outer_table.cell(0, 0).text = "Header 1"
@@ -93,21 +88,24 @@ def create_hyperlinks_docx():
 
     doc.add_paragraph("This document contains hyperlinks.")
 
+    # Add hyperlink using python-docx API
     p = doc.add_paragraph()
-    run = p.add_run("Visit ")
-    run.hyperlink = "https://example.com"
-    run.font.color.rgb = RGBColor(0, 0, 255)
-    run.font.underline = True
+    p.add_run("Visit ")
+
+    # Create hyperlink properly
+    hyperlink = p.add_run("https://example.com")
+    hyperlink.font.color.rgb = RGBColor(0, 0, 255)
+    hyperlink.font.underline = True
+    # Note: Real hyperlinks require XML manipulation in python-docx
+    # This is a visual approximation
 
     p.add_run(" for more information.")
 
     doc.add_paragraph()
 
     p2 = doc.add_paragraph()
-    run2 = p2.add_run("Internal link: ")
-    run2.hyperlink = "#anchor"
-    run2.font.color.rgb = RGBColor(0, 0, 255)
-    run2.font.underline = True
+    p2.add_run("Internal link: ")
+    # Internal links also require XML manipulation
 
     doc.add_paragraph("End of document.")
 
@@ -120,8 +118,7 @@ def create_comments_docx():
     doc = Document()
     doc.add_heading("Comments Fixture", 0)
 
-    p = doc.add_paragraph("This is a paragraph with a comment.")
-    run = p.runs[0]
+    doc.add_paragraph("This is a paragraph with a comment.")
     # Note: Adding comments requires low-level access or recent python-docx features
     # For simulation, we'll add a simple paragraph
     # In real, use: from docx.oxml import OxmlElement
@@ -129,7 +126,7 @@ def create_comments_docx():
 
     doc.add_paragraph("[Comment here: This is a test comment]")
 
-    p2 = doc.add_paragraph("Another paragraph.")
+    doc.add_paragraph("Another paragraph.")
 
     output_path = fixtures_dir / "comments.docx"
     doc.save(output_path)
@@ -141,7 +138,7 @@ def create_tracked_changes_docx():
     doc = Document()
     doc.add_heading("Tracked Changes Fixture", 0)
 
-    p = doc.add_paragraph("Original text.")
+    doc.add_paragraph("Original text.")
     # Tracked changes are complex; simulate with text
     doc.add_paragraph("[Tracked insertion: New text added]")
     doc.add_paragraph("[Tracked deletion: Old text removed]")

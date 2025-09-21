@@ -12,16 +12,17 @@ import os
 import shutil
 import tempfile
 import time
-import uuid
+# import uuid  # unused
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import httpx
+# import httpx  # unused
 from fastapi.testclient import TestClient
 
 # Set test environment variables before importing
 os.environ["DEBUG"] = "true"
+# Test-only placeholder; not a real secret.
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["OPENAI_API_KEY"] = "test-api-key-not-for-production"
 
@@ -239,7 +240,7 @@ class TestTranslationIntegration:
         # Start a translation job
         with open(sample_docx_content, 'rb') as f:
             upload_response = client.post(
-                "/api/translate/translate",
+                "/api/translate",
                 files={"file": ("test.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
             )
 
@@ -254,7 +255,7 @@ class TestTranslationIntegration:
         """Test rejection of invalid glossary JSON."""
         with open(sample_docx_content, 'rb') as f:
             response = client.post(
-                "/api/translate/translate",
+                "/api/translate",
                 files={"file": ("test.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
                 data={
                     "glossary": "invalid json {"
@@ -285,7 +286,7 @@ class TestTranslationIntegration:
             time.sleep(1)
 
             # Check job status
-            status_response = client.get(f"/api/translate/translate/{job_id}")
+            status_response = client.get(f"/api/translate/{job_id}")
             status_data = status_response.json()
             assert status_data["status"] == "failed"
             assert "error" in status_data
@@ -301,7 +302,7 @@ class TestTranslationIntegration:
             for i in range(3):
                 with open(sample_docx_content, 'rb') as f:
                     response = client.post(
-                        "/api/translate/translate",
+                        "/api/translate",
                         files={"file": (f"test{i}.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
                     )
                     assert response.status_code == 202
@@ -347,7 +348,7 @@ class TestTranslationIntegration:
 
                 with open(sample_docx_content, 'rb') as f:
                     response = client.post(
-                        "/api/translate/translate",
+                        "/api/translate",
                         files={"file": ("test.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
                     )
 

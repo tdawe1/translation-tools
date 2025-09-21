@@ -21,7 +21,7 @@ This directory contains targeted DOCX fixtures for testing specific advanced fea
   - Adapter handles merge spans correctly.
 
 ### hyperlinks.docx
-- **Structure**: Paragraphs with hyperlinks to "https://example.com" and "#anchor", styled in blue and underlined.
+- **Structure**: Paragraphs with hyperlinks to "<https://example.com>" and "#anchor", styled in blue and underlined.
 - **Expected Assertions**:
   - Hyperlinks preserved in output DOCX (URLs unchanged).
   - Surrounding text translated, but link text remains as is or translated if needed (depending on policy).

@@ -97,37 +97,6 @@ jobs:
           validate(instance=data, schema=schema)
           print('Sample audit JSON validation passed')
           "
-
-      - name: Generate and validate sample audit JSON
-        run: |
-          python -c "
-          import json
-          from pathlib import Path
-          from jsonschema import validate
-          from backend.document_adapter import Segment, DocumentMetadata, SegmentType
-          from scripts.translate_docx import generate_audit_report
-          seg = Segment(
-              id='test_1',
-              text='test',
-              segment_type=SegmentType.PARAGRAPH,
-              file_path='doc.xml',
-              paragraph_index=0,
-              run_index=0,
-              metadata={'bold': False, 'italic': False, 'underline': False}
-          )
-          meta = DocumentMetadata(file_path='/tmp/test.docx', format='docx', segment_count=1)
-          report_path = '/tmp/audit.json'
-          generate_audit_report(
-              '/tmp/in.docx', '/tmp/out.docx', [seg], meta, 1.0,
-              {'hits': 0, 'misses': 1}, report_path
-          )
-          with open(report_path, 'r') as f:
-              data = json.load(f)
-          schema_path = Path.cwd() / 'schemas' / 'audit_v1.schema.json'
-          schema = json.load(open(schema_path, 'r'))
-          validate(instance=data, schema=schema)
-          print('Sample audit JSON validation passed')
-          "
 +
        - name: Run DOCX CI target
          run: make docx-ci
