@@ -1,0 +1,11 @@
+{
+  "job_id": "e990c68d-f644-4e6b-8b79-37d2ad268035",
+  "status": "processing",
+  "input_file": "test.docx",
+  "output_file": "translated_test.docx",
+  "model": "gpt-4o-2024-08-06",
+  "temperature": 0.6,
+  "batch_size": 12,
+  "created_at": "2025-09-21T06:06:09.465889",
+  "progress": 0
+}
