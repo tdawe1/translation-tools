@@ -1,177 +1,192 @@
 #!/usr/bin/env python3
 """
-PR Triage Script: Checkout PR, run tests, smoke, style audit, check flakiness.
-Outputs Markdown report with pass/fail, top errors, flakiness flags.
+PR Triage Script: checkout PR, run tests, smoke, style audit, and flakiness checks.
+Generates a Markdown summary that can be pasted into a review comment.
 """
 
 import argparse
-import subprocess
 import os
-import sys
-import re
-from pathlib import Path
-from datetime import datetime
-import statistics
+import shlex
 import shutil
+import statistics
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable, List, Tuple
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
-def run_command(cmd, description, cwd=PROJECT_ROOT):
-    """Run shell command and return result."""
+
+def run_command(cmd: Iterable[str], description: str, cwd: Path = PROJECT_ROOT) -> subprocess.CompletedProcess:
+    """Run a command (list or string) and capture output."""
+    if isinstance(cmd, str):
+        cmd = shlex.split(cmd)
+    cmd_list = list(cmd)
     print(f"Running: {description}")
-    print(f"Command: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-    result = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True, text=True, cwd=cwd)
+    print(f"Command: {' '.join(cmd_list)}")
+    result = subprocess.run(cmd_list, capture_output=True, text=True, cwd=cwd)
     if result.returncode != 0:
-        print(f"Error: {result.stderr}")
+        if result.stdout:
+            print(f"stdout:\n{result.stdout}")
+        if result.stderr:
+            print(f"stderr:\n{result.stderr}")
     return result
 
-def parse_pytest_output(stdout, stderr):
-    """Parse pytest output for passed, failed, and top errors."""
-    output = stdout + stderr
-    lines = output.splitlines()
-    passed = failed = 0
-    errors = []
-    for line in lines:
-        if line.strip().startswith('PASSED'):
-            passed += 1
-        elif line.strip().startswith('FAILED'):
-            failed += 1
-            # Extract test name and reason
-            match = re.match(r'FAILED (tests/[^:]+):', line)
-            if match:
-                test_name = match.group(1)
-                errors.append(test_name)
-    return passed, failed, errors[:3]
 
-def check_flakiness(pytest_cmd, num_runs=3):
-    """Run pytest multiple times and check pass rate variance."""
-    pass_rates = []
-    for i in range(num_runs):
-        result = run_command(pytest_cmd, f"Pytest run {i+1}")
+def parse_pytest_output(stdout: str, stderr: str) -> Tuple[int, int, List[str]]:
+    """Parse pytest output for counts and error summaries."""
+    output = f"{stdout}\n{stderr}"
+    passed = failed = 0
+    top_errors: List[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('PASSED '):
+            passed += 1
+        elif stripped.startswith('FAILED '):
+            failed += 1
+            if len(top_errors) < 3:
+                top_errors.append(stripped)
+    return passed, failed, top_errors
+
+
+def check_flakiness(pytest_cmd: List[str], num_runs: int = 3) -> Tuple[bool, List[float]]:
+    """Run pytest multiple times and compute pass-rate variance."""
+    pass_rates: List[float] = []
+    for idx in range(num_runs):
+        result = run_command(pytest_cmd, f"Pytest run {idx + 1}")
         passed, failed, _ = parse_pytest_output(result.stdout, result.stderr)
         total = passed + failed
-        rate = passed / total if total > 0 else 0.0
+        rate = passed / total if total else 0.0
         pass_rates.append(rate)
-        print(f"Run {i+1} pass rate: {rate:.2%}")
+        print(f"Run {idx + 1} pass rate: {rate:.2%}")
+
     if len(pass_rates) < 2:
         return False, pass_rates
     variance = max(pass_rates) - min(pass_rates)
     return variance > 0.1, pass_rates
 
-def run_smoke_test():
-    """Run smoke test for DOCX translation."""
-    fixture = PROJECT_ROOT / "tests" / "simple_japanese.docx"
+
+def run_smoke_test() -> Tuple[bool, Path | None, Path | None]:
+    """Run the smoke translator and return (pass, csv, audit)."""
+    fixture = PROJECT_ROOT / "tests" / "fixtures" / "simple_japanese.docx"
     if not fixture.exists():
         print("Warning: Fixture not found, skipping smoke")
-        return False, None
-    
+        return False, None, None
+
     output_dir = PROJECT_ROOT / "tmp" / "triage_smoke"
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_docx = output_dir / f"smoke_{timestamp}.docx"
-    bilingual_csv = output_dir / f"smoke_{timestamp}_bilingual.csv"
-    
-    # Run smoke_translate_docx.py with bilingual
+
     cmd = [
-        "python", "scripts/smoke_translate_docx.py",
+        sys.executable,
+        "scripts/smoke_translate_docx.py",
         "--input", str(fixture),
         "--output", str(output_docx),
-        "--csv-report"  # This generates the csv? Wait, from code, --bilingual-csv is needed in translate
+        "--csv-report",
+        "--audit-json",
     ]
-    # Actually, from smoke code, it adds --bilingual-csv to translate cmd if csv_report or audit
-    # But --csv-report copies to artifacts, but generates bilingual if needed.
-    # To get csv, use --csv-report, it will run with --bilingual-csv
-    cmd.append("--csv-report")
     result = run_command(cmd, "DOCX Smoke Test")
-    
     smoke_pass = result.returncode == 0 and output_docx.exists()
-    csv_path = bilingual_csv if bilingual_csv.exists() else None  # But from smoke, it's in output.parent
-    # Adjust: from smoke code, bilingual_path = output_path.parent / f"{output_path.stem}_bilingual.csv"
-    actual_csv = output_docx.parent / f"{output_docx.stem}_bilingual.csv"
-    if actual_csv.exists():
-        csv_path = actual_csv
-    else:
-        csv_path = None
-    
-    return smoke_pass, csv_path
 
-def run_style_audit(csv_path):
-    """Run style audit on bilingual CSV."""
+    csv_candidate = output_docx.parent / f"{output_docx.stem}_bilingual.csv"
+    audit_candidate = output_docx.parent / f"{output_docx.stem}_audit.json"
+    csv_path = csv_candidate if csv_candidate.exists() else None
+    audit_path = audit_candidate if audit_candidate.exists() else None
+    return smoke_pass, csv_path, audit_path
+
+
+def run_style_audit(csv_path: Path | None) -> Tuple[bool, List[str]]:
+    """Run the style audit script if a CSV is available."""
     if not csv_path or not csv_path.exists():
         return False, []
-    
-    cmd = ["python", "scripts/audit_style.py", str(csv_path), "--report", str(csv_path.parent / "triage_audit.csv")]
+
+    report_path = csv_path.parent / "triage_audit.csv"
+    cmd = [
+        sys.executable,
+        "scripts/audit_style.py",
+        str(csv_path),
+        "--report",
+        str(report_path),
+    ]
     result = run_command(cmd, "Style Audit")
-    audit_pass = result.returncode == 0
-    top_issues = []
-    if audit_pass:
-        # Parse report for top issues? For now, just status
-        pass
-    else:
-        # Could parse stderr for issues
-        lines = result.stderr.splitlines()
-        top_issues = [line for line in lines[-3:] if "issue" in line.lower()]  # Rough
-    
-    return audit_pass, top_issues
+    if result.returncode == 0:
+        return True, []
+    lines = result.stderr.splitlines()[-3:]
+    return False, lines
 
-def generate_md_report(pr_number, pytest_pass, passed, failed, top_pytest_errors, smoke_pass, audit_pass, top_audit_issues, flaky, pass_rates):
-    """Generate Markdown report."""
+
+def generate_md_report(
+    pr_number: int | None,
+    pytest_pass: bool,
+    passed: int,
+    failed: int,
+    top_pytest_errors: List[str],
+    smoke_pass: bool,
+    audit_pass: bool,
+    top_audit_issues: List[str],
+    flaky: bool,
+    pass_rates: List[float],
+) -> str:
+    """Generate a Markdown triage report."""
     overall_pass = pytest_pass and smoke_pass and audit_pass and not flaky
-    
-    md = f"""# PR Triage Report for PR #{pr_number}
+    report_lines = [
+        f"# PR Triage Report for PR #{pr_number if pr_number else 'local'}",
+        "",
+        f"Generated on {datetime.now():%Y-%m-%d %H:%M:%S}",
+        "",
+        "## Pytest Results",
+        f"- **Status**: {'PASS' if pytest_pass else 'FAIL'}",
+        f"- **Passed**: {passed}",
+        f"- **Failed**: {failed}",
+    ]
 
-Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-## Pytest Results
-- **Status**: {'PASS' if pytest_pass else 'FAIL'}
-- **Passed**: {passed}
-- **Failed**: {failed}
-"""
     if top_pytest_errors:
-        md += "## Top 3 Pytest Errors\n"
-        for err in top_pytest_errors:
-            md += f"- {err}\n"
+        report_lines.append("- **Top 3 Errors**:")
+        report_lines.extend(f"  - {err}" for err in top_pytest_errors)
     else:
-        md += "- No errors\n"
+        report_lines.append("- No errors")
 
-    md += f"""
-## Smoke Tests (DOCX Adapted)
-- **Status**: {'PASS' if smoke_pass else 'FAIL'}
-
-## Style Audit
-- **Status**: {'PASS' if audit_pass else 'FAIL'}
-"""
+    report_lines.extend([
+        "",
+        "## Smoke Test",
+        f"- **Status**: {'PASS' if smoke_pass else 'FAIL'}",
+        "",
+        "## Style Audit",
+        f"- **Status**: {'PASS' if audit_pass else 'FAIL'}",
+    ])
     if top_audit_issues:
-        md += "## Top 3 Audit Issues\n"
-        for issue in top_audit_issues:
-            md += f"- {issue}\n"
+        report_lines.append("- Issues:")
+        report_lines.extend(f"  - {issue}" for issue in top_audit_issues)
     else:
-        md += "- No issues\n"
+        report_lines.append("- No issues")
 
-    md += f"""
-## Flakiness Check
-- **Flaky**: {'YES (>10% variance)' if flaky else 'NO'}
-- **Pass Rates**: {[f'{r:.2%}' for r in pass_rates]}
+    report_lines.extend([
+        "",
+        "## Flakiness Check",
+        f"- **Flaky**: {'YES (>10% variance)' if flaky else 'NO'}",
+        f"- **Pass Rates**: {[f'{r:.2%}' for r in pass_rates]}",
+        "",
+        "## Overall Status",
+        f"- **{'PASS' if overall_pass else 'FAIL'}**",
+    ])
 
-## Overall Status
-- **{'PASS' if overall_pass else 'FAIL'}**
-"""
-
-    report_path = PROJECT_ROOT / f"triage_pr_{pr_number or 'current'}.md"
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(md)
+    report_path = PROJECT_ROOT / f"triage_pr_{pr_number if pr_number else 'current'}.md"
+    report_path.write_text('\n'.join(report_lines), encoding='utf-8')
     print(f"Report saved to {report_path}")
-    return md
+    return '\n'.join(report_lines)
 
-def main():
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Triage PR with tests, smoke, and audits.")
-    parser.add_argument("--pr-number", type=int, help="PR number to checkout (optional for simulation)")
-    parser.add_argument("--post-to-gh", action="store_true", help="Post the triage report as a comment on the PR using gh CLI")
+    parser.add_argument("--pr-number", type=int, help="PR number to checkout (optional)")
+    parser.add_argument("--post-to-gh", action="store_true", help="Post the triage report as a PR comment using gh")
     args = parser.parse_args()
-    
+
     pr_number = args.pr_number
     if pr_number:
-        checkout_cmd = f"gh pr checkout {pr_number}"
+        checkout_cmd = ['gh', 'pr', 'checkout', str(pr_number)]
         result = run_command(checkout_cmd, "Checkout PR branch")
         if result.returncode != 0:
             print("Failed to checkout PR, exiting.")
@@ -179,71 +194,35 @@ def main():
         print(f"Checked out PR #{pr_number}")
     else:
         print("Simulating on current branch")
-    
-    # Run pytest
-    pytest_cmd = "pytest tests/ -v"
-    result_pytest = run_command(pytest_cmd.split(), "Pytest")  # list for split
+
+    pytest_cmd = ['pytest', 'tests', '-v']
+    result_pytest = run_command(pytest_cmd, "Pytest")
     passed, failed, top_pytest_errors = parse_pytest_output(result_pytest.stdout, result_pytest.stderr)
     pytest_pass = failed == 0
-    
-    # Run smoke
-    smoke_pass, csv_path = run_smoke_test()
-    
-    # Run audit
+
+    smoke_pass, csv_path, audit_path = run_smoke_test()
     audit_pass, top_audit_issues = run_style_audit(csv_path)
-    
-    # Check flakiness
     flaky, pass_rates = check_flakiness(pytest_cmd)
-    
-    overall_pass = pytest_pass and smoke_pass and audit_pass and not flaky
-    
-    # Generate report
-    md = generate_md_report(pr_number, pytest_pass, passed, failed, top_pytest_errors, smoke_pass, audit_pass, top_audit_issues, flaky, pass_rates)
-    print(md)
-    
-    if args.post_to_gh:
-        if not pr_number:
-            print("Error: --post-to-gh requires --pr-number")
-            sys.exit(1)
-        
-        report_path = PROJECT_ROOT / f"triage_pr_{pr_number}.md"
-        
-        summary = f"""## Quick Triage Summary
 
-Overall Status: {'PASS' if overall_pass else 'FAIL'}
-"""
-        if top_pytest_errors:
-            summary += "Top Pytest Errors:\n" + "\n".join(f"- {e}" for e in top_pytest_errors) + "\n\n"
-        if top_audit_issues:
-            summary += "Top Audit Issues:\n" + "\n".join(f"- {i}" for i in top_audit_issues) + "\n\n"
-        
-        summary += "@codex-reviewer Please review the triage report below.\n\n---\n"
-        
-        with open(report_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        
-        full_body = summary + content
-        
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write(full_body)
-        
-        if shutil.which("gh") is None:
-            print("gh CLI not found, simulating post to PR...")
-            print(f"Would run: gh pr comment {pr_number} --body-file {report_path}")
-            preview = summary[:200] + "..." if len(summary) > 200 else summary
-            print("Summary preview:", preview)
-        else:
-            cmd = ["gh", "pr", "comment", str(pr_number), "--body-file", str(report_path)]
-            result = run_command(cmd, "Posting triage report to PR")
-            if result.returncode == 0:
-                print(f"Triage report posted successfully to PR #{pr_number}")
-            else:
-                print(f"Failed to post triage report to PR #{pr_number}")
-                if result.stderr:
-                    print(result.stderr)
-    
-    # Exit with overall status
-    sys.exit(0 if overall_pass else 1)
+    md_report = generate_md_report(
+        pr_number,
+        pytest_pass,
+        passed,
+        failed,
+        top_pytest_errors,
+        smoke_pass,
+        audit_pass,
+        top_audit_issues,
+        flaky,
+        pass_rates,
+    )
 
-if __name__ == "__main__":
+    if args.post_to_gh and pr_number:
+        comment_cmd = ['gh', 'pr', 'comment', str(pr_number), '--body', md_report]
+        result = run_command(comment_cmd, "Post report to PR")
+        if result.returncode != 0:
+            print("Failed to post comment via gh CLI")
+
+
+if __name__ == '__main__':
     main()
