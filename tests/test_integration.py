@@ -286,7 +286,7 @@ class TestTranslationIntegration:
             time.sleep(1)
 
             # Check job status
-            status_response = client.get(f"/api/translate/translate/{job_id}")
+            status_response = client.get(f"/api/translate/{job_id}")
             status_data = status_response.json()
             assert status_data["status"] == "failed"
             assert "error" in status_data
