@@ -1406,7 +1406,7 @@ if args.cache_only:
         else:
             logging.info("cache-only mode: cache covers all strings; proceeding without any API/mocks")
 
-    batch_size = args.batch
+batch_size = args.batch
     if args.auto_batch and missing:
         avg_len = sum(len(s) for s in missing) / len(missing)
         batch_size = estimate_batch_size(args.model, avg_len, args.max_array_items)

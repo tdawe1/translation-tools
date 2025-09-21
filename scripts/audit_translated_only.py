@@ -102,9 +102,7 @@ def audit_from_pptx(pptx_path, threshold):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True, help="Path to bilingual.csv or translated.pptx")
-    ap.add_argument("--out", default="audit_translated.json", help="Write audit JSON here")
-    ap.add_argument("--fail-threshold", type=float, default=1.0, help="Fail if residual % > this")
+    ap.add_argument("--input", required=True, help="Path to bilingual.csv or translated.pptx")\n    ap.add_argument("--out", default="audit_translated.json", help="Write audit JSON here")\n    ap.add_argument("--threshold", type=float, default=1.0, help="Fail if residual % > this")
     args = ap.parse_args()
 
     input_path = Path(args.input)
