@@ -943,7 +943,12 @@ class TestDocxAdapter(unittest.TestCase):
 
     def test_nested_tables_extraction(self):
         """Test extraction from document with nested tables."""
-        fixture_path = 'artifacts/test123/nested_tables_input_20250921_065106.docx'
+        fixture_path = os.path.join(
+            os.path.dirname(__file__),
+            'fixtures',
+            'uploads',
+            'nested_tables.docx'
+        )
         if not os.path.exists(fixture_path):
             self.skipTest("Nested tables fixture not found")
         
