@@ -25,10 +25,20 @@ These fixtures are used in unit and integration tests to verify parsing, extract
 - Key files: [Content_Types].xml, word/document.xml (3750 bytes), word/styles.xml (349458 bytes)
 
 **Expected XML Paths and Snippets:**
-- word/document.xml:
-  - Outer table: `<w:tbl><w:tblPr ...><w:tblGrid><w:gridCol w:w=&quot;4320&quot;/>&lt;w:gridCol w:w=&quot;4320&quot;/></w:tblGrid>...`
-  - Nested table: Inside `<w:tc>`: `<w:tbl><w:tblGrid><w:gridCol w:w=&quot;1440&quot;/>&lt;w:gridCol w:w=&quot;1440&quot;/>&lt;w:gridCol w:w=&quot;1440&quot;/></w:tblGrid>...`
-  - Example text: `<w:t>Nested Header 1</w:t>`
+```xml
+<!-- word/document.xml -->
+<w:tbl>
+  <w:tblPr>
+    <w:tblGrid>
+      <w:gridCol w:w="4320"/>
+      <w:gridCol w:w="4320"/>
+    </w:tblGrid>
+  </w:tblPr>
+  <!-- ... -->
+</w:tbl>
+```
+- Nested table: Inside `<w:tc>`: another `<w:tbl>` with 3 columns
+- Example text: `<w:t>Nested Header 1</w:t>`
 
 **Test Assertions:**
 - `unzip -l` returns 17 files.
@@ -53,9 +63,28 @@ These fixtures are used in unit and integration tests to verify parsing, extract
 - Key files: word/document.xml (2957 bytes)
 
 **Expected XML Paths and Snippets:**
-- word/document.xml:
-  - Table: `<w:tbl><w:tblGrid><w:gridCol w:w=&quot;2880&quot;/>&lt;w:gridCol w:w=&quot;2880&quot;/>&lt;w:gridCol w:w=&quot;2880&quot;/></w:tblGrid>`
-  - Merged cell: `<w:tc><w:tcPr><w:tcW w:type=&quot;dxa&quot; w:w=&quot;5760&quot;/>&lt;w:gridSpan w:val=&quot;2&quot;/></w:tcPr><w:p><w:r><w:t>Merged Item 1</w:t></w:r></w:p></w:tc>`
+```xml
+<!-- word/document.xml -->
+<w:tbl>
+  <w:tblGrid>
+    <w:gridCol w:w="2880"/>
+    <w:gridCol w:w="2880"/>
+    <w:gridCol w:w="2880"/>
+  </w:tblGrid>
+  <!-- Merged cell example -->
+  <w:tc>
+    <w:tcPr>
+      <w:tcW w:type="dxa" w:w="5760"/>
+      <w:gridSpan w:val="2"/>
+    </w:tcPr>
+    <w:p>
+      <w:r>
+        <w:t>Merged Item 1</w:t>
+      </w:r>
+    </w:p>
+  </w:tc>
+</w:tbl>
+```
 
 **Test Assertions:**
 - `unzip -l` returns 17 files.
