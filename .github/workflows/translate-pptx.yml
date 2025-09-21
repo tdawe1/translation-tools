@@ -173,7 +173,7 @@ jobs:
           python scripts/upload_to_drive.py
 
       - name: Run DOCX smoke test
-        run: python scripts/smoke_translate_docx.py --input tests/simple_japanese.docx --output tmp/smoke_output.docx --audit-json --csv-report
+        run: python scripts/smoke_translate_docx.py --input tests/simple_japanese.docx --output tmp/smoke_output.docx
 
       - name: Collect smoke artifacts
         run: |
