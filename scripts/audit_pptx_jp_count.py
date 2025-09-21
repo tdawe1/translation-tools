@@ -14,6 +14,14 @@ JP_CORE = r'\u3040-\u309F\u30A0-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF'
 JP_ANY = re.compile(f'[{JP_CORE}]')
 
 def count_file(path):
+    """Count Japanese characters in a PPTX file.
+
+    Args:
+        path: Path to the PPTX file
+
+    Prints:
+        Total Japanese character count and per-slide breakdown
+    """
     total = 0
     per_slide = {}
     with zipfile.ZipFile(path, 'r') as z:

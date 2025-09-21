@@ -16,6 +16,14 @@ from xml.etree import ElementTree as ET
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 
 def normalize_para_text(p_el):
+    """Extract and normalize text from a paragraph element.
+
+    Args:
+        p_el: Paragraph XML element
+
+    Returns:
+        str: Normalized text content
+    """
     br_tag = A_NS + "br"
     t_tag = A_NS + "t"
     r_tag = A_NS + "r"
@@ -33,6 +41,12 @@ def normalize_para_text(p_el):
     return "".join(parts)
 
 def set_para_text(p_el, new_text: str):
+    """Set text content of a paragraph element, preserving runs.
+
+    Args:
+        p_el: Paragraph XML element
+        new_text: New text to set
+    """
     t_tag = A_NS + "t"
     r_tag = A_NS + "r"
     runs = [child for child in p_el if child.tag == r_tag]
@@ -69,6 +83,11 @@ def set_para_text(p_el, new_text: str):
             t.text = ""
 
 def main():
+    """Apply cached translations to a PPTX file.
+
+    Reads translations from cache JSON and applies them to matching paragraphs
+    in the input PPTX file.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument('--in', dest='inp', required=True)
     ap.add_argument('--out', dest='outp', required=True)

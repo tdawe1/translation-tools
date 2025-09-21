@@ -18,6 +18,11 @@ def has_japanese(text):
     return bool(JP_ANY.search(str(text)))
 
 def main():
+    """Scrub translation cache to remove entries without Japanese text.
+
+    Removes cache entries that don't contain Japanese characters,
+    helping to maintain a clean and relevant translation cache.
+    """
     cache_file = sys.argv[1] if len(sys.argv) > 1 else "../translation_cache.json"
     
     if not os.path.exists(cache_file):

@@ -38,6 +38,15 @@ def build_service():
     return build("drive", "v3", credentials=creds)
 
 def ensure_folder(drive, name):
+    """Ensure a folder exists in Google Drive, creating if necessary.
+
+    Args:
+        drive: Google Drive service object
+        name: Folder name
+
+    Returns:
+        Folder ID
+    """
     q = (
         f"name = '{name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     )
@@ -76,6 +85,16 @@ def validate_folder_id(drive, folder_id: str) -> str:
     return folder_id
 
 def upload(drive, path, folder_id):
+    """Upload a file to Google Drive.
+
+    Args:
+        drive: Google Drive service object
+        path: Path to file to upload
+        folder_id: ID of folder to upload to
+
+    Returns:
+        Created file object
+    """
     fname = os.path.basename(path)
     mime, _ = mimetypes.guess_type(path)
     meta = {"name": fname, "parents": [folder_id]}

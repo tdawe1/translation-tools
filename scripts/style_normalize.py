@@ -110,6 +110,15 @@ def replace_banned_phrases(s: str) -> str:
         pattern = re.compile(rf"\b{re.escape(banned)}\b", re.IGNORECASE)
         
         def replace_match(match, replacement=replacement):
+            """Replace matched text preserving case.
+
+            Args:
+                match: Regex match object
+                replacement: Replacement text
+
+            Returns:
+                Replacement with original case preserved
+            """
             original = match.group(0)
             if original.isupper():
                 return replacement.upper()

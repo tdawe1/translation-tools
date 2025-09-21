@@ -345,6 +345,10 @@ def should_fail_ci(audit_results: Dict[str, List[Dict[str, Any]]],
 
 # CLI interface
 def main():
+    """Run style consistency audit from command line.
+
+    Parses arguments and runs the style audit on the provided CSV file.
+    """
     import argparse
     
     parser = argparse.ArgumentParser(description="Style consistency audit for PPTX translations")
