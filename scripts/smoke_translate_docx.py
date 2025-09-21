@@ -14,6 +14,7 @@ from pathlib import Path
 import zipfile
 import xml.etree.ElementTree as ET
 from difflib import SequenceMatcher
+import shlex
 
 def get_structure_xml(docx_path: Path) -> str:
     """Extract and serialize XML structure ignoring text content."""
@@ -61,8 +62,8 @@ def main():
     print("Running translation...")
     cmd = [
         'python', 'scripts/translate_docx.py',
-        '--in', str(input_path),
-        '--out', str(output_path),
+        '--in', shlex.quote(str(input_path)),
+        '--out', shlex.quote(str(output_path)),
         '--batch', '1'  # Small batch for testing
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ)

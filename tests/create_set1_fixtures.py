@@ -2,13 +2,14 @@
 """
 Create Set 1 DOCX fixtures for advanced features.
 """
-import os
 from pathlib import Path
 from docx import Document
-from docx.shared import Inches, Pt
+from docx.shared import Pt
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.shared import RGBColor
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+import docx.opc.constants
 
 # Create fixtures directory
 fixtures_dir = Path(__file__).parent / "fixtures" / "set1"
@@ -86,6 +87,36 @@ def create_merged_cells_docx():
     doc.save(output_path)
     print(f"Created: {output_path}")
 
+def add_hyperlink(paragraph, url, text, color=None, underline=True):
+    """Add hyperlink to paragraph using OXML elements."""
+    part = paragraph.part
+    r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+
+    # Create run
+    new_run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+
+    if not underline:
+        u = OxmlElement('w:u')
+        u.set(qn('w:val'), 'none')
+        rPr.append(u)
+
+    if color:
+        color_el = OxmlElement('w:color')
+        color_el.set(qn('w:val'), color)
+        rPr.append(color_el)
+
+    # Add text
+    t = OxmlElement('w:t')
+    t.text = text
+    new_run.append(rPr)
+    new_run.append(t)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+    return hyperlink
+
 def create_hyperlinks_docx():
     """Create DOCX with hyperlinks."""
     doc = Document()
@@ -94,20 +125,15 @@ def create_hyperlinks_docx():
     doc.add_paragraph("This document contains hyperlinks.")
 
     p = doc.add_paragraph()
-    run = p.add_run("Visit ")
-    run.hyperlink = "https://example.com"
-    run.font.color.rgb = RGBColor(0, 0, 255)
-    run.font.underline = True
-
+    p.add_run("Visit ")
+    add_hyperlink(p, "https://example.com", "example.com", color="0000FF", underline=True)
     p.add_run(" for more information.")
 
     doc.add_paragraph()
 
     p2 = doc.add_paragraph()
-    run2 = p2.add_run("Internal link: ")
-    run2.hyperlink = "#anchor"
-    run2.font.color.rgb = RGBColor(0, 0, 255)
-    run2.font.underline = True
+    p2.add_run("Internal link: ")
+    add_hyperlink(p2, "#anchor", "anchor", color="0000FF", underline=True)
 
     doc.add_paragraph("End of document.")
 
