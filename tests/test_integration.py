@@ -6,6 +6,7 @@ Tests the complete flow from API upload to translation completion.
 """
 
 import asyncio
+import contextlib
 import csv
 import json
 import os
@@ -458,8 +459,24 @@ async def test_orchestrator_integration():
     if not test_docx.exists():
         pytest.skip("Test fixture not available")
 
-    # Mock the batch translation
-    with patch('scripts.translate_pptx_inplace.translate_batch') as mock_translate:
+    # Mock the orchestrator's batch translation helper. Prefer the DOCX hook when
+    # available, falling back to the PPTX helper in older branches.
+    with contextlib.ExitStack() as stack:
+        try:
+            mock_translate = stack.enter_context(
+                patch(
+                    'backend.translation_orchestrator.orchestrator._call_batch_translation',
+                    new_callable=AsyncMock,
+                )
+            )
+        except (AttributeError, ModuleNotFoundError):
+            mock_translate = stack.enter_context(
+                patch(
+                    'scripts.translate_pptx_inplace.translate_batch',
+                    new_callable=AsyncMock,
+                )
+            )
+
         mock_translate.return_value = ["This is a translated text."]
 
         result = await orchestrator.translate_document(
