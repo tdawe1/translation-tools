@@ -167,3 +167,73 @@ jobs:
             scripts/translate_pptx_inplace.py
             scripts/audit_pptx_jp_count.py
             scripts/upload_to_drive.py
+
+  docx-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai python-docx lxml docxcompose defusedxml
+
+      - name: Run DOCX smoke test
+        run: python scripts/smoke_translate_docx.py --input tests/fixtures/simple_japanese.docx --output tmp/smoke_out/output.docx --audit-json --csv-report --task-id hx-1
+
+      - name: Capture artifacts
+        run: |
+          mkdir -p artifacts/hx-1
+          cp tmp/smoke_out/* artifacts/hx-1/ 2>/dev/null || true
+          if [ -d "artifacts/set2" ]; then
+            cp artifacts/set2/* artifacts/hx-1/ 2>/dev/null || true
+          fi
+
+      - name: Upload smoke artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: docx-smoke-artifacts
+          path: |
+            tmp/smoke_out/
+            artifacts/hx-1/
+
+  docx-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai python-docx lxml docxcompose defusedxml
+
+      - name: Run DOCX smoke test
+        run: python scripts/smoke_translate_docx.py --input tests/simple_japanese.docx --output tmp/smoke_out/output.docx --audit-json --csv-report --task-id hx-1
+
+      - name: Capture artifacts
+        run: |
+          mkdir -p artifacts/hx-1
+          cp tmp/smoke_out/* artifacts/hx-1/ 2>/dev/null || true
+          if [ -d "artifacts/set2" ]; then
+            cp artifacts/set2/* artifacts/hx-1/ 2>/dev/null || true
+          fi
+
+      - name: Upload smoke artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: docx-smoke-artifacts
+          path: |
+            tmp/smoke_out/
+            artifacts/hx-1/

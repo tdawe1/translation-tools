@@ -5,15 +5,16 @@ Verifies XML structure parity >95% after translation.
 """
 
 import argparse
-import subprocess
 import os
 import shutil
+import subprocess
 import sys
-from datetime import datetime
-from pathlib import Path
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
+from datetime import datetime
 from difflib import SequenceMatcher
+from pathlib import Path
+
 
 def get_structure_xml(docx_path: Path) -> str:
     """Extract and serialize XML structure ignoring text content."""
@@ -47,6 +48,10 @@ def main():
     parser = argparse.ArgumentParser(description="Smoke test for DOCX translation")
     parser.add_argument('--input', required=True, help='Input fixture DOCX path')
     parser.add_argument('--output', required=True, help='Output path for translated DOCX')
+    parser.add_argument('--audit-json', action='store_true', help='Enable JSON audit report')
+    parser.add_argument('--csv-report', action='store_true', help='Enable CSV bilingual report')
+    parser.add_argument('--task-id', help='Task ID for saving artifacts')
+    parser.add_argument('--dry-run', action='store_true', help='Perform dry run without API calls')
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -65,6 +70,12 @@ def main():
         '--out', str(output_path),
         '--batch', '1'  # Small batch for testing
     ]
+    if args.audit_json:
+        cmd.append('--json-audit')
+    if args.csv_report:
+        cmd.append('--bilingual-csv')
+    if args.dry_run:
+        cmd.append('--dry-run')
     result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ)
     if result.returncode != 0:
         print(f"Translation failed:\n{result.stderr}")
@@ -94,6 +105,14 @@ def main():
     shutil.copy2(output_path, out_sample)
     print(f"Samples collected in {smoke_dir}")
     print("Smoke test PASSED")
+    if args.task_id:
+        artifacts_dir = Path("artifacts") / args.task_id
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        art_in = artifacts_dir / in_sample.name
+        art_out = artifacts_dir / out_sample.name
+        shutil.copy2(in_sample, art_in)
+        shutil.copy2(out_sample, art_out)
+        print(f"Artifacts saved to {artifacts_dir}")
     return 0
 
 if __name__ == "__main__":
