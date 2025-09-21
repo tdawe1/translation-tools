@@ -364,5 +364,10 @@ async def delete_job(
         logger.error(f"Failed to delete job: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete job"
-        )
+        detail="Failed to delete job"
+    )
+
+@router.post("/submit")
+async def submit_job():
+    """Stub endpoint for job submission"""
+    return {"job_id": "stub-123", "status": "queued"}

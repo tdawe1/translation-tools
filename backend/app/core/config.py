@@ -153,6 +153,17 @@ class Settings(BaseSettings):
     # Override with: REDIS_URL=redis://user:pass@host:port/db
     REDIS_URL: str = "redis://localhost:6379"
 
+    # Database URL
+    DATABASE_URL: str = "sqlite:///./translation_pipeline.db"
+
+    # Feature flags
+    ENABLE_STYLE_CHECKING: bool = True
+    ENABLE_EXPANSION_POLICY: bool = True
+    ENABLE_FORMATTING_PROFILE: bool = True
+
+    # Logging level
+    LOG_LEVEL: str = "DEBUG"
+
     # Paths to translation scripts
     SCRIPTS_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scripts")
 

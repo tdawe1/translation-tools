@@ -1,165 +1,102 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 import os
-import uuid
-import json
-from typing import Dict, List
-import subprocess
-import asyncio
+import logging
+from pathlib import Path
 
-app = FastAPI(title="Translation Pipeline API")
+# Import core components
+from .core.config import settings
+from .database.database import Base, engine
+from .api import auth, translate, jobs, sse
+
+# Configure logging
+logging.basicConfig(level=settings.LOG_LEVEL)
+logger = logging.getLogger(__name__)
+
+# Create tables on startup
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    logger.info("Starting Translation Pipeline API")
+
+    # Create database tables
+    Base.metadata.create_all(bind=engine)
+
+    # Ensure directories exist
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
+
+    logger.info(f"Application configuration: {settings.get_environment_info()}")
+    yield
+    logger.info("Shutting down Translation Pipeline API")
+
+# Initialize FastAPI app
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.VERSION,
+    description="A production-ready Japanese-to-English document translation pipeline",
+    lifespan=lifespan
+)
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Job storage
-jobs: Dict[str, Dict] = {}
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    """Request logging middleware"""
+    logger.info(f"{request.method} {request.url}")
+    response = await call_next(request)
+    logger.info(f"Response status: {response.status_code}")
+    return response
+
+# Include API routers
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(translate.router, prefix="/api", tags=["translate"])
+app.include_router(jobs.router, prefix="/api", tags=["jobs"])
+app.include_router(sse.router, prefix="/api", tags=["sse"])
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
-
-@app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(('.pptx', '.pdf')):
-        raise HTTPException(status_code=400, detail="Only PPTX and PDF files are supported")
-
-    file_id = str(uuid.uuid4())
-    uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
-    os.makedirs(uploads_dir, exist_ok=True)
-    file_path = os.path.join(uploads_dir, f"{file_id}_{file.filename}")
-
-    with open(file_path, "wb") as buffer:
-        content = await file.read()
-        buffer.write(content)
-
-    return {"file_id": file_id, "filename": file.filename, "path": file_path}
-
-@app.post("/translate")
-async def translate_file(
-    file_id: str,
-    filename: str,
-    model: str = "gpt-4o",
-    background_tasks: BackgroundTasks = None
-):
-    job_id = str(uuid.uuid4())
-
-    jobs[job_id] = {
-        "id": job_id,
-        "status": "pending",
-        "filename": filename,
-        "model": model,
-        "progress": 0,
-        "created_at": "2024-01-01T00:00:00Z"
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "version": settings.VERSION,
+        "name": settings.APP_NAME,
+        "openai_configured": settings.is_openai_configured(),
+        "redis_configured": settings.is_redis_configured()
     }
 
-    background_tasks.add_task(run_translation, job_id, file_id, filename, model)
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "message": "Translation Pipeline API",
+        "version": settings.VERSION,
+        "docs": "/docs",
+        "health": "/health"
+    }
 
-    return {"job_id": job_id, "status": "started"}
-
-async def run_translation(job_id: str, file_id: str, filename: str, model: str):
-    try:
-        jobs[job_id]["status"] = "running"
-
-        # Find the uploaded file
-        upload_path = os.path.join(os.path.dirname(__file__), "uploads")
-        input_file = None
-        if os.path.exists(upload_path):
-            for f in os.listdir(upload_path):
-                if f.startswith(file_id):
-                    input_file = os.path.join(upload_path, f)
-                    break
-
-        if not input_file:
-            jobs[job_id]["status"] = "failed"
-            jobs[job_id]["error"] = "File not found"
-            return
-
-        # Update progress
-        jobs[job_id]["progress"] = 25
-
-        # Run translation script
-        results_dir = os.path.join(os.path.dirname(__file__), "results")
-        os.makedirs(results_dir, exist_ok=True)
-        output_file = os.path.join(results_dir, f"{job_id}_{filename}")
-
-        # Get the project root directory (parent of backend)
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-        if filename.lower().endswith('.pptx'):
-            cmd = [
-                "python", f"{base_dir}/scripts/translate_pptx_inplace.py",
-                "--in", input_file,
-                "--out", output_file,
-                "--model", model
-            ]
-        else:
-            cmd = [
-                "python", f"{base_dir}/scripts/translate_pdf.py",
-                "--in", input_file,
-                "--out", output_file,
-                "--model", model
-            ]
-
-        jobs[job_id]["progress"] = 50
-
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-
-        stdout, stderr = await process.communicate()
-
-        jobs[job_id]["progress"] = 90
-
-        if process.returncode == 0:
-            jobs[job_id]["status"] = "completed"
-            jobs[job_id]["progress"] = 100
-            jobs[job_id]["output_file"] = output_file
-        else:
-            jobs[job_id]["status"] = "failed"
-            jobs[job_id]["error"] = stderr.decode()
-
-    except Exception as e:
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
-
-@app.get("/jobs/{job_id}")
-async def get_job_status(job_id: str):
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return jobs[job_id]
-
-@app.get("/jobs")
-async def list_jobs():
-    return list(jobs.values())
-
-@app.get("/jobs/{job_id}/download")
-async def download_result(job_id: str):
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    job = jobs[job_id]
-    if job["status"] != "completed" or "output_file" not in job:
-        raise HTTPException(status_code=400, detail="Job not completed")
-
-    if not os.path.exists(job["output_file"]):
-        raise HTTPException(status_code=404, detail="Result file not found")
-
-    return FileResponse(
-        job["output_file"],
-        filename=job["filename"],
-        media_type='application/octet-stream'
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "Endpoint not found. Check /docs for available endpoints."}
     )
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        reload=settings.DEBUG,
+        log_level=settings.LOG_LEVEL.lower()
+    )
