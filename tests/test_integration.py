@@ -348,7 +348,7 @@ class TestTranslationIntegration:
 
                 with open(sample_docx_content, 'rb') as f:
                     response = client.post(
-                        "/api/translate/translate",
+                        "/api/translate",
                         files={"file": ("test.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
                     )
 
