@@ -16,7 +16,11 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
+<<<<<<< HEAD
         cache: 'pip'
+=======
+
+>>>>>>> 3e49a045 (feat: Add artifact collection to docx-ci workflow)
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -30,9 +34,15 @@ jobs:
       run: |
         python scripts/smoke_translate_docx.py --input tests/fixtures/simple_japanese.docx --output /tmp/smoke_output.docx
 
+    - name: Collect artifacts
+      run: |
+        mkdir -p artifacts/${{ github.run_id }}
+        cp -r tmp/smoke_out/* artifacts/${{ github.run_id }}/ 2>/dev/null || true
+        cp -r artifacts/set2/* artifacts/${{ github.run_id }}/ 2>/dev/null || true
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: smoke-artifacts
-        path: /tmp/smoke_out/
+        path: artifacts/
         retention-days: 7
