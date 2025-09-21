@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 import statistics
+import shutil
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -165,6 +166,7 @@ Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 def main():
     parser = argparse.ArgumentParser(description="Triage PR with tests, smoke, and audits.")
     parser.add_argument("--pr-number", type=int, help="PR number to checkout (optional for simulation)")
+    parser.add_argument("--post-to-gh", action="store_true", help="Post the triage report as a comment on the PR using gh CLI")
     args = parser.parse_args()
     
     pr_number = args.pr_number
@@ -193,12 +195,54 @@ def main():
     # Check flakiness
     flaky, pass_rates = check_flakiness(pytest_cmd)
     
+    overall_pass = pytest_pass and smoke_pass and audit_pass and not flaky
+    
     # Generate report
     md = generate_md_report(pr_number, pytest_pass, passed, failed, top_pytest_errors, smoke_pass, audit_pass, top_audit_issues, flaky, pass_rates)
     print(md)
     
+    if args.post_to_gh:
+        if not pr_number:
+            print("Error: --post-to-gh requires --pr-number")
+            sys.exit(1)
+        
+        report_path = PROJECT_ROOT / f"triage_pr_{pr_number}.md"
+        
+        summary = f"""## Quick Triage Summary
+
+Overall Status: {'PASS' if overall_pass else 'FAIL'}
+"""
+        if top_pytest_errors:
+            summary += "Top Pytest Errors:\n" + "\n".join(f"- {e}" for e in top_pytest_errors) + "\n\n"
+        if top_audit_issues:
+            summary += "Top Audit Issues:\n" + "\n".join(f"- {i}" for i in top_audit_issues) + "\n\n"
+        
+        summary += "@codex-reviewer Please review the triage report below.\n\n---\n"
+        
+        with open(report_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        full_body = summary + content
+        
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(full_body)
+        
+        if shutil.which("gh") is None:
+            print("gh CLI not found, simulating post to PR...")
+            print(f"Would run: gh pr comment {pr_number} --body-file {report_path}")
+            preview = summary[:200] + "..." if len(summary) > 200 else summary
+            print("Summary preview:", preview)
+        else:
+            cmd = ["gh", "pr", "comment", str(pr_number), "--body-file", str(report_path)]
+            result = run_command(cmd, "Posting triage report to PR")
+            if result.returncode == 0:
+                print(f"Triage report posted successfully to PR #{pr_number}")
+            else:
+                print(f"Failed to post triage report to PR #{pr_number}")
+                if result.stderr:
+                    print(result.stderr)
+    
     # Exit with overall status
-    overall_pass = pytest_pass and smoke_pass and audit_pass and not flaky
     sys.exit(0 if overall_pass else 1)
 
 if __name__ == "__main__":
