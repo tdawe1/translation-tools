@@ -110,10 +110,7 @@ def main():
         print(f"Input not found: {input_path}", file=sys.stderr)
         sys.exit(1)
 
-    if input_path.suffix == '.csv':
-        report, passed = audit_from_csv(str(input_path), args.fail_threshold)
-    elif input_path.suffix.lower() == '.pptx':
-        report, passed = audit_from_pptx(str(input_path), args.fail_threshold)
+    if input_path.suffix == '.csv':\n        report, passed = audit_from_csv(str(input_path), args.threshold)\n    elif input_path.suffix.lower() == '.pptx':\n        report, passed = audit_from_pptx(str(input_path), args.threshold)
     else:
         print("Unsupported input format. Use .csv or .pptx", file=sys.stderr)
         sys.exit(1)
@@ -129,11 +126,7 @@ def main():
             for r in report["residual_rows"]:
                 w.writerow([r["slide"], r["shape"], r["para"], r["jp"], r["en"]])
 
-    percentage = report.get("percentage_residual", 0)
-    print(f"Translated-only residual JP: {percentage:.2f}%")
-    if not passed:
-        print(f"FAIL: residual > threshold ({args.fail_threshold}%)")
-        sys.exit(1)
+    percentage = report.get("percentage_residual", 0)\n    print(f"Translated-only residual JP: {percentage:.2f}%")\n    if not passed:\n        print(f"FAIL: residual > threshold ({args.threshold}%)")\n        sys.exit(1)
     print("OK: within threshold")
 
 if __name__ == "__main__":
