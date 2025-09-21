@@ -63,7 +63,7 @@ def run_smoke_test():
     fixture = PROJECT_ROOT / "tests" / "simple_japanese.docx"
     if not fixture.exists():
         print("Warning: Fixture not found, skipping smoke")
-        return False, "Fixture missing"
+        return False, None
     
     output_dir = PROJECT_ROOT / "tmp" / "triage_smoke"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,7 @@ def run_smoke_test():
 def run_style_audit(csv_path):
     """Run style audit on bilingual CSV."""
     if not csv_path or not csv_path.exists():
-        return False, "No CSV for audit"
+        return False, []
     
     cmd = ["python", "scripts/audit_style.py", str(csv_path), "--report", str(csv_path.parent / "triage_audit.csv")]
     result = run_command(cmd, "Style Audit")

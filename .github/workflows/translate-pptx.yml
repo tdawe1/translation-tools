@@ -37,11 +37,29 @@ on:
         description: "Optional: slide range to translate, e.g. 1-6"
         required: false
         type: string
+  pull_request:
+    types: [opened]
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
+  triage:
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run PR Triage
+        run: python scripts/triage_pr.py --pr-number ${{ github.event.number }} --post-to-gh
+
   translate:
     runs-on: ubuntu-latest
     env:
