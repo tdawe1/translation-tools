@@ -6,13 +6,43 @@ import uuid
 import os
 
 # Get database URL from settings or use default
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./translation_pipeline.db")
+def get_database_url():
+    return os.getenv("DATABASE_URL", "sqlite:///./translation_pipeline.db")
 
-# Create engine
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# Global variables for lazy initialization
+_engine = None
+_SessionLocal = None
 
-# Create session
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def get_engine():
+    global _engine
+    if _engine is None:
+        DATABASE_URL = get_database_url()
+        _engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    return _engine
+
+def get_session_local():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=get_engine())
+    return _SessionLocal
+
+# Create properties for backward compatibility
+class DatabaseProxy:
+    @property
+    def engine(self):
+        return get_engine()
+
+    @property
+    def SessionLocal(self):
+        return get_session_local()
+
+# Create proxy instance
+db = DatabaseProxy()
+
+# For backward compatibility, assign to module globals
+import sys
+sys.modules[__name__].engine = db.engine
+sys.modules[__name__].SessionLocal = db.SessionLocal
 
 # Base class for models
 Base = declarative_base()

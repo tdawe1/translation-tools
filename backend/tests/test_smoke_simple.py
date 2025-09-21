@@ -57,7 +57,7 @@ def test_complete_translation_workflow(client, test_upload_dir, test_output_dir)
             job_data = response.json()
             job_id = job_data["job"]["id"]
             assert job_data["job"]["status"] == "pending"
-            assert job_data["job"]["file_type"] == "pptx"
+            assert job_data["job"]["request"]["file_type"] == "pptx"
 
     # 6. Check job status
     response = client.get(f"/api/jobs/{job_id}", headers=headers)

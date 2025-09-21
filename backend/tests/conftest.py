@@ -12,6 +12,15 @@ from datetime import datetime
 # Set pytest marker for test environment detection
 os.environ["PYTEST_RUNNING"] = "1"
 
+# Override specific environment variables for testing (these take precedence over .env.test)
+os.environ["DEBUG"] = "true"
+os.environ["SECRET_KEY"] = "test-secret-key-for-pytest-testing-only-32-chars-long"
+os.environ["OPENAI_API_KEY"] = "mock-sk-for-testing"
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["LOG_LEVEL"] = "WARNING"
+os.environ["UPLOAD_DIR"] = "test_uploads"
+os.environ["OUTPUT_DIR"] = "test_outputs"
+
 # Load test environment variables from .env.test if it exists
 env_test_path = os.path.join(os.path.dirname(__file__), '..', '.env.test')
 if os.path.exists(env_test_path):
@@ -22,16 +31,9 @@ if os.path.exists(env_test_path):
                 key, value = line.split('=', 1)
                 value = value.split('#')[0].strip()
                 key = key.strip()
-                os.environ[key] = value
-
-# Override specific environment variables for testing (these take precedence over .env.test)
-os.environ["DEBUG"] = "true"
-os.environ["SECRET_KEY"] = "test-secret-key-for-pytest-testing-only-32-chars-long"
-os.environ["OPENAI_API_KEY"] = "mock-sk-for-testing"
-os.environ["DATABASE_URL"] = "sqlite:///:memory:"
-os.environ["LOG_LEVEL"] = "WARNING"
-os.environ["UPLOAD_DIR"] = "test_uploads"
-os.environ["OUTPUT_DIR"] = "test_outputs"
+                # Only set if not already overridden above
+                if key not in os.environ:
+                    os.environ[key] = value
 
 # Add the app directory to the Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -43,6 +45,7 @@ from app.database.session import get_db
 from app.database.database import Base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import pool as conn_pool
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -114,12 +117,19 @@ def test_output_dir():
 @pytest.fixture(scope="function")
 def test_db():
     """Create a test database session."""
-    # Use in-memory SQLite for tests
-    test_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    # Use in-memory SQLite for tests with connection pooling disabled
+    test_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=conn_pool.NullPool  # Disable pooling to avoid connection issues
+    )
     TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
     # Create tables
     Base.metadata.create_all(bind=test_engine)
+
+    # Store original globals
+    from app.database.database import _engine as original_engine, _SessionLocal as original_SessionLocal
 
     # Override the database dependency
     def override_get_db():
@@ -131,6 +141,11 @@ def test_db():
 
     app.dependency_overrides[get_db] = override_get_db
 
+    # Reset the lazy initialization for testing
+    from app.database.database import _engine, _SessionLocal
+    _engine = test_engine
+    _SessionLocal = TestSessionLocal
+
     # Return a session for the test
     db_session = TestSessionLocal()
     try:
@@ -140,14 +155,68 @@ def test_db():
         app.dependency_overrides.clear()
         Base.metadata.drop_all(bind=test_engine)
         test_engine.dispose()
+        # Reset lazy initialization to original values
+        _engine = original_engine
+        _SessionLocal = original_SessionLocal
 
 
 @pytest.fixture(scope="function")
-def client(test_db):
+def client():
     """Create a test client with test settings."""
-    # The test_db fixture already sets up the database override
-    with TestClient(app) as test_client:
-        yield test_client
+    # Use a file-based SQLite database for tests to ensure persistence across connections
+    import tempfile
+    import os
+
+    # Create a temporary database file
+    db_file = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+    db_file.close()
+
+    try:
+        # Create engine with better connection handling for tests
+        test_engine = create_engine(
+            f"sqlite:///{db_file.name}",
+            connect_args={"check_same_thread": False},
+            poolclass=conn_pool.NullPool  # Disable pooling for tests to avoid connection issues
+        )
+        TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+
+        # Create tables
+        from app.database.database import Base
+        Base.metadata.create_all(bind=test_engine)
+
+        # Override the database dependency
+        def override_get_db():
+            try:
+                db = TestSessionLocal()
+                yield db
+            finally:
+                db.close()
+
+        # Override the lazy initialization
+        from app.database.database import _engine, _SessionLocal
+        original_engine = _engine
+        original_SessionLocal = _SessionLocal
+
+        # Set the global lazy variables to our test instances
+        _engine = test_engine
+        _SessionLocal = TestSessionLocal
+
+        app.dependency_overrides[get_db] = override_get_db
+
+        with TestClient(app) as test_client:
+            yield test_client
+
+        # Cleanup
+        app.dependency_overrides.clear()
+
+        # Restore original lazy initialization
+        _engine = original_engine
+        _SessionLocal = original_SessionLocal
+
+    finally:
+        # Clean up the temporary database file
+        if os.path.exists(db_file.name):
+            os.unlink(db_file.name)
 
 
 @pytest.fixture(scope="function")

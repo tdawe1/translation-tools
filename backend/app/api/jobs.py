@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from datetime import datetime, timedelta
 import io
 import sqlite3
@@ -14,6 +14,10 @@ from ..core.job_manager import job_manager
 from ..services.auth_service import auth_service
 from ..core.config import settings
 from pydantic import BaseModel, Field
+from typing import Dict, Optional
+from datetime import datetime
+from ..core.config import settings
+from ..api.websocket import manager
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +49,16 @@ class JobStatisticsResponse(BaseModel):
     daily_stats: List[Dict[str, Any]]
     file_type_distribution: Dict[str, int]
     period_days: int
+
+class ManifestRequest(BaseModel):
+    """Request model for Drive manifest jobs"""
+    type: Literal["drive"]
+    drive_file_id: str = Field(..., description="Google Drive file ID")
+    name: str = Field(..., description="File name")
+    modified_time: Optional[str] = Field(None, description="Last modified time")
+    idempotency_key: str = Field(..., description="Idempotency key")
+
+idempotency_store: Dict[str, str] = {}
 
 @router.get("/jobs", response_model=Dict[str, Any])
 async def list_jobs(
@@ -415,7 +429,91 @@ async def download_job_result(
         media_type=media_type
     )
 
-@router.post("/submit")
-async def submit_job():
-    """Stub endpoint for job submission"""
-    return {"job_id": "stub-123", "status": "queued"}
+@router.post("/jobs", response_model=Dict[str, Any])
+async def create_job(body: Dict[str, Any] = Body(...)):
+    request = body
+    if request.get("type") == "batch":
+        key = request.get("idempotency_key")
+        if not key:
+            raise HTTPException(status_code=400, detail="idempotency_key required")
+        # Check reuse
+        progress_dict = manager.get_batch_progress(key)
+        if progress_dict is not None:
+            return {
+                "batch_id": key,
+                "status": "reused",
+                "progress": progress_dict["progress"],
+                "completed": progress_dict["completed"],
+                "total": progress_dict["total"]
+            }
+        job_specs_data = request.get("jobs", [])
+        if not job_specs_data:
+            raise HTTPException(status_code=400, detail="jobs list required for batch")
+        await manager.start_batch(key, len(job_specs_data))
+        created_job_ids = []
+        user_id = "system_drive"
+        for spec_data in job_specs_data:
+            input_file = spec_data.get("input")
+            if not input_file:
+                continue
+            tr_dict = {
+                "file_type": spec_data.get("file_type", "auto"),
+                "model": spec_data.get("model", "gpt-4o-mini"),
+                "target_language": "en"
+            }
+            pages = spec_data.get("pages")
+            if pages:
+                tr_dict["pages"] = pages
+            tr = TranslationRequest(**tr_dict)
+            metadata = {
+                "drive_manifest": spec_data,
+                "batch_id": key
+            }
+            if "output" in spec_data:
+                metadata["output"] = spec_data["output"]
+            job = await job_manager.create_job(
+                user_id=user_id,
+                input_file=input_file,
+                request=tr,
+                metadata=metadata
+            )
+            created_job_ids.append(job.id)
+            await manager.add_job_to_batch(key, job.id)
+        await manager.broadcast_batch_update(key, "queued", 0.0)
+        idempotency_store[key] = key
+        return {
+            "batch_id": key,
+            "status": "queued",
+            "num_jobs": len(created_job_ids),
+            "job_ids": created_job_ids
+        }
+    elif request.get("type") == "drive":
+        key = request.get("idempotency_key")
+        if key in idempotency_store:
+            existing_job_id = idempotency_store[key]
+            job = await job_manager.get_job(existing_job_id)
+            if job:
+                await manager.broadcast_drive_update(job.id, "reused", request)
+                return job.dict()
+        drive_file_id = request.get("drive_file_id")
+        if not drive_file_id:
+            raise HTTPException(status_code=400, detail="drive_file_id required")
+        user_id = "system_drive"
+        tr = TranslationRequest(
+            file_type="auto",
+            model=settings.DEFAULT_MODEL or "gpt-4o-mini",
+            target_language="en"
+        )
+        input_file = f"drive://{drive_file_id}"
+        metadata = {"drive_manifest": request}
+        job = await job_manager.create_job(
+            user_id=user_id,
+            input_file=input_file,
+            request=tr,
+            metadata=metadata
+        )
+        idempotency_store[key] = job.id
+        await manager.broadcast_drive_update(job.id, "queued", request)
+        return job.dict()
+    else:
+        raise HTTPException(status_code=400, detail="Invalid type: must be 'drive' or 'batch'")

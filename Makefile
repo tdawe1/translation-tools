@@ -3,18 +3,25 @@
 help:
 	@echo "Targets:"
 	@echo "  setup           - Install all dependencies"
-	@echo "  verify-deps     - Verify all dependencies are installed"
+	@echo "  verify-deps     - Verify dependencies are installed"
 	@echo "  estimate        - Estimate translation cost for PPTX"
 	@echo "  estimate-pdf    - Estimate translation cost for PDF"
 	@echo "  derive-tone     - Derive tone/style from PPTX"
 	@echo "  translate-pdf   - Translate PDF using the complete pipeline"
+	@echo "  test            - Run PDF translation orchestrator tests (fast)"
 	@echo "  test-pdf        - Test PDF translation pipeline"
 	@echo "  test-quality    - Test PDF quality metrics"
 	@echo "  test-integration - Test PDF integration"
+	@echo "  test-all        - Run all tests"
+	@echo "  test-clean      - Test in clean environment"
 	@echo "  translate-pptx  - Translate PPTX using the standard pipeline"
-	@echo "  test            - Run unit tests"
 	@echo "  clean           - Clean up temporary files"
 	@echo "  clean-pdf       - Clean up PDF translation artifacts"
+	@echo ""
+	@echo "Setup:"
+	@echo "  1. Copy .env.sample to .env and fill in your values"
+	@echo "  2. Run 'make setup' to install dependencies"
+	@echo "  3. Run 'make verify-deps' to verify installation"
 	@echo ""
 	@echo "Combined targets:"
 	@echo "  estimate-all    - Estimate costs for both PPTX and PDF"
@@ -36,11 +43,17 @@ verify-deps:
 
 all: test
 
-# Run all tests with proper PYTHONPATH
+# Run PDF translation orchestrator tests (fast, reliable)
 test:
-	@echo "Running unit tests..."
+	@echo "Running PDF translation orchestrator tests..."
 	@PYTHONPATH=. python -m pytest tests/test_translate_pdf.py -v
 	@echo "✅ PDF translation orchestrator tests passed"
+
+# Run all tests with proper PYTHONPATH
+test-all:
+	@echo "Running all tests..."
+	@PYTHONPATH=. python -m pytest tests/ -v --tb=short
+	@echo "✅ All tests completed"
 
 # Run PDF-specific tests with proper PYTHONPATH
 test-pdf:
@@ -99,17 +112,20 @@ translate-pdf:
 		--offline "$(OFFLINE)" \
 		--verbose "$(VERBOSE)"
 
+LAYOUT_PRESET ?= normal
+
 translate-pptx:
 	@if [ -z "$(INPUT)" ] || [ -z "$(OUTPUT)" ]; then \
 		echo "Usage: make translate-pptx INPUT=input.pptx OUTPUT=output.pptx [OPTIONS]"; \
-		echo "Example: make translate-pptx INPUT=presentation.pptx OUTPUT=presentation_en.pptx MODEL=gpt-4o-mini"; \
+		echo "Example: make translate-pptx INPUT=presentation.pptx OUTPUT=presentation_en.pptx MODEL=gpt-4o-mini LAYOUT_PRESET=tight"; \
 		exit 1; \
 	fi
 	@echo "Translating PPTX: $(INPUT) -> $(OUTPUT)"
 	@python scripts/translate_pptx_inplace.py \
 		--in "$(INPUT)" \
 		--out "$(OUTPUT)" \
-		--model "$(MODEL)"
+		--model "$(MODEL)" \
+		--layout-preset "$(LAYOUT_PRESET)"
 
 clean:
 	@./scripts/cleanup.sh aggressive
@@ -165,3 +181,6 @@ estimate:
 
 derive-tone:
 	@./tools/derive_deck_tone.py inputs/68b42f175c652_f711fcda865b11f0b6cecace4a312dcf_en_final_offline_v2.pptx
+
+poll-drive:
+	python scripts/drive_poller_cli.py

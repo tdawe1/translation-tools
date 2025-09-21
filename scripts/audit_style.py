@@ -201,8 +201,23 @@ def audit_length_violations(rows: List[Tuple], max_title_words: int = 12, max_bu
     
     return issues
 
+def audit_manual_review(rows: List[Tuple]) -> List[Dict[str, Any]]:
+    \"\"\"Flag content that requires manual review, such as complex tables or long text.\"\"\"
+    issues = []
+    for slide_xml, idx, jp, en, kind in rows:
+        clean_en = re.sub(r'\[/?[^\]]+\]', '', en).strip()
+        if len(clean_en) > 300 or 'table' in kind.lower():
+            issues.append({
+                "type": "manual_review",
+                "reason": "Long text or table content - verify layout and readability",
+                "slide": slide_xml,
+                "index": idx,
+                "text": clean_en[:100] + "..." if len(clean_en) > 100 else clean_en
+            })
+    return issues
+
 def run_full_audit(csv_path: str, glossary: Dict[str, str] = None) -> Dict[str, List[Dict[str, Any]]]:
-    """
+    \"\"\"
     Run comprehensive style audit on bilingual CSV output.
     
     Args:
@@ -211,7 +226,7 @@ def run_full_audit(csv_path: str, glossary: Dict[str, str] = None) -> Dict[str, 
         
     Returns:
         Dictionary of audit results by category
-    """
+    \"\"\"
     # Load CSV data
     rows = []
     try:
@@ -238,7 +253,8 @@ def run_full_audit(csv_path: str, glossary: Dict[str, str] = None) -> Dict[str, 
         "terminology_issues": audit_terminology_consistency(rows, glossary),
         "japanese_residual": audit_japanese_residual(rows),
         "formatting_tag_issues": audit_formatting_tags(rows),
-        "length_violations": audit_length_violations(rows)
+        "length_violations": audit_length_violations(rows),
+        "manual_review_flags": audit_manual_review(rows)
     }
     
     return audit_results
@@ -286,6 +302,8 @@ def _format_issue_description(issue: Dict[str, Any]) -> str:
         return f"Title too long: {issue.get('word_count', 0)} words (max {issue.get('max_words', 12)})"
     elif issue_type == "bullet_too_long":
         return f"Bullet too long: {issue.get('char_count', 0)} chars (max {issue.get('max_chars', 200)})"
+    elif issue_type == "manual_review":
+        return f"Manual review needed: {issue.get('reason', '')}"
     
     return str(issue)
 
@@ -305,6 +323,8 @@ def _get_suggested_fix(issue: Dict[str, Any]) -> str:
         return f"Balance [{issue.get('tag', '')}] tags"
     elif issue_type in ["title_too_long", "bullet_too_long"]:
         return "Condense text or apply expansion policy"
+    elif issue_type == "manual_review":
+        return "Human review for layout and readability"
     
     return "Review manually"
 

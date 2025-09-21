@@ -24,6 +24,10 @@ colorama>=0.4.0  # Colored terminal output
 tqdm>=4.60.0    # Progress bars
 python-dotenv>=0.19.0  # Environment variables
 
+# Document processing
+python-docx>=0.8.11
+openpyxl>=3.0.0
+
 # Testing
 pytest>=7.0.0
 pytest-asyncio>=0.21.0

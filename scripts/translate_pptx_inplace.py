@@ -27,6 +27,8 @@ import asyncio
 import argparse, json, os, re, shutil, sys, time, zipfile, logging
 from xml.etree import ElementTree as ET
 from pathlib import Path
+from .pptx_extractor import PptxExtractor
+import yaml
 from datetime import datetime
 
 def get_timestamped_filename(filepath):
@@ -72,7 +74,7 @@ except ImportError:
 # ---- OpenAI client (official library) ----
 try:
     from openai import OpenAI, AsyncOpenAI
-from utils.gpt_adapter import GPT5Adapter
+    from utils.gpt_adapter import GPTAdapter
 except Exception:
     print("ERROR: The 'openai' package is required. Install via: pip install openai", file=sys.stderr)
     raise
@@ -235,26 +237,7 @@ def set_para_text(p_el, new_text: str):
         last_t = runs[-1].find(t_tag)
         last_t.text = (last_t.text or "") + tail
 
-def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set | None = None):
-    """Return a flat list of (slide_name, paragraph_index, text)."""
-    paras = []
-    slide_files = sorted([n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")])
 
-    if slide_range:
-        filtered_slides = []
-        for sf in slide_files:
-            match = re.search(r'slide(\d+)\.xml', sf)
-            if match and int(match.group(1)) in slide_range:
-                filtered_slides.append(sf)
-        slide_files = filtered_slides
-
-    for sf in slide_files:
-        root = ET.fromstring(z.read(sf))
-        for idx, p_el in enumerate(root.iter(A_NS + "p")):
-            text = normalize_para_text(p_el)
-            if text.strip():
-                paras.append((sf, idx, text))
-    return paras, slide_files
 
 def _ensure_autofit(root):
     # For every txBody, ensure <a:bodyPr><a:normAutofit/></a:bodyPr>
@@ -1316,9 +1299,22 @@ def main():
         help="Minimum font scale (percent * 1000) for norm autofit; 90000 = 90%")
     ap.add_argument("--line-spacing-pct", type=int, default=100000,
         help="Paragraph line spacing percentage (100000 = 100%)")
-    ap.add_argument("--tight-margins", action="store_true",
-        help="Reduce text insets (left/right ≈0.5em, top/bottom ≈0.25em) to gain space")
-    args = ap.parse_args()
+ap.add_argument("--layout-preset", default="normal", help="Layout preset from config/layout_defaults.yaml")
+ap.add_argument("--tight-margins", action="store_true",
+    help="Reduce text insets (left/right ≈0.5em, top/bottom ≈0.25em) to gain space")
+ap.add_argument("--adapter", default="gpt-4o", help="Primary adapter: gpt5 or gpt-4o")
+args = ap.parse_args()
+
+if args.layout_preset == "normal":
+    config_path = "config/layout_defaults.yaml"
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            defaults = yaml.safe_load(f)
+        args.autofit_mode = defaults.get("autofit_mode", args.autofit_mode)
+        args.font_scale_min = defaults.get("font_scale_min", args.font_scale_min)
+        args.line_spacing_pct = defaults.get("line_spacing_pct", args.line_spacing_pct)
+        if "tight_margins" in defaults:
+            args.tight_margins = True
     
     # Backup existing files if --fresh flag is used  
     if args.fresh:
@@ -1357,9 +1353,9 @@ def main():
         
         base_url = os.getenv("OPENAI_BASE_URL", "").strip()
         if base_url:
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            MAIN_ADAPTER = GPTAdapter(api_key=api_key, base_url=base_url, primary_model=primary_model)
         else:
-            client = OpenAI(api_key=api_key)
+            MAIN_ADAPTER = GPTAdapter(api_key=api_key, primary_model=primary_model)
     
     logging.info(f"Starting translation: {args.inp} -> {args.outp}")
     logging.info(f"Model: {args.model}, Batch size: {args.batch}")
@@ -1376,21 +1372,22 @@ def main():
         with open(args.cache, "r", encoding="utf-8") as f:
             cache = json.load(f)
 
-    with zipfile.ZipFile(args.inp, "r") as zin:
-        paras, slide_files = extract_all_paragraphs(zin, slide_range)
-    
-    logging.info(f"Extracted {len(paras)} paragraphs from {len(slide_files)} slides")
+extractor = PptxExtractor()
+paras = extractor.extract(args.inp, args.slides)
+slide_files = list(set(sf for sf, _, _, _ in paras))
 
-    src_strings = [t for _, _, t in paras if JP_ANY.search(t)]
-    uniq = list(dict.fromkeys(src_strings))
-    # Treat identity-mapped entries as missing to avoid caching failures where source == target
-    missing = [s for s in uniq if s not in cache or cache.get(s) == s]
-    
-    logging.info(f"Found {len(src_strings)} Japanese strings, {len(uniq)} unique")
-    logging.info(f"Cache has {len(cache)} entries, {len(missing)} strings need translation")
+logging.info(f"Extracted {len(paras)} paragraphs from {len(slide_files)} slides")
 
-    # In cache-only mode, require that there are no missing items
-    if args.cache_only:
+src_strings = [t for _, _, t, _ in paras if JP_ANY.search(t)]
+uniq = list(dict.fromkeys(src_strings))
+# Treat identity-mapped entries as missing to avoid caching failures where source == target
+missing = [s for s in uniq if s not in cache or cache.get(s) == s]
+
+logging.info(f"Found {len(src_strings)} Japanese strings, {len(uniq)} unique")
+logging.info(f"Cache has {len(cache)} entries, {len(missing)} strings need translation")
+
+# In cache-only mode, require that there are no missing items
+if args.cache_only:
         if missing:
             sample = missing[:10]
             logging.error(
@@ -1485,7 +1482,7 @@ def main():
     with open(args.bilingual_csv, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(["slide_xml","paragraph_idx","Japanese","English"])
-        for sf, idx, jp in paras:
+        for sf, idx, jp, _ in paras:
             en = cache.get(jp, jp)
             w.writerow([sf, idx, jp, en])
 

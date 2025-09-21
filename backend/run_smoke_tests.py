@@ -44,8 +44,8 @@ def run_smoke_tests(test_type="all"):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend_dir)
 
-    # Use tests directory in parent directory (project root)
-    tests_dir = Path("../tests")
+    # Use tests directory in current directory
+    tests_dir = Path("tests")
 
     if test_type == "simple":
         cmd.extend([

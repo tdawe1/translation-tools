@@ -51,8 +51,7 @@ except ImportError as e:
 try:
     from .translate_pptx_inplace import (
         backup_existing_files, 
-        get_timestamped_filename,
-        batch_translate
+        get_timestamped_filename
     )
     PPTX_SYSTEM_AVAILABLE = True
 except ImportError:
@@ -278,11 +277,10 @@ class PDFTranslationOrchestrator:
                 return {}
             
             try:
-# Initialize GPT Adapter
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise ValueError("OPENAI_API_KEY environment variable not set")
-client = GPT5Adapter(api_key=api_key)
+                # Initialize OpenAI client
+                client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                if not client.api_key:
+                    raise ValueError("OPENAI_API_KEY environment variable not set")
                 
                 # Use PPTX batch translate function
                 logger.info(f"Translating {len(uncached)} uncached items with {self.model}")
@@ -603,10 +601,11 @@ Environment:
                        help='Enable verbose logging')
     parser.add_argument('--fresh', action='store_true',
                        help='Backup existing output files with timestamps')
-    
+    parser.add_argument('--adapter', default="gpt-4o", help="Primary adapter: gpt5 or gpt-4o")
     args = parser.parse_args()
     
     # Validate arguments
+    adapter_name = os.getenv("OPENAI_ADAPTER", args.adapter)
     if not os.path.exists(args.input_path):
         print(f"Error: Input file not found: {args.input_path}")
         sys.exit(1)
@@ -657,7 +656,8 @@ Environment:
             pages=args.pages,
             offline=args.offline,
             cache_only=args.cache_only,
-            verbose=args.verbose
+            verbose=args.verbose,
+            adapter_name=adapter_name
         )
         
         success = orchestrator.translate_pdf()

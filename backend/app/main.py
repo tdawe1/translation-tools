@@ -8,8 +8,15 @@ from pathlib import Path
 
 # Import core components
 from .core.config import settings
-from .database.database import Base, engine
-from .api import auth, translate, jobs, sse
+from .database.database import Base, get_engine
+from .api import auth, translate, jobs, sse, websocket
+
+# Import Drive poller optionally
+try:
+    from .core.drive_poller import DrivePoller
+    HAS_DRIVE_POLLER = True
+except ImportError:
+    HAS_DRIVE_POLLER = False
 
 # Configure logging
 logging.basicConfig(level=settings.LOG_LEVEL)
@@ -22,15 +29,28 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Translation Pipeline API")
 
     # Create database tables
+    engine = get_engine()
     Base.metadata.create_all(bind=engine)
 
     # Ensure directories exist
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
 
+    # Start Drive poller if available
+    if HAS_DRIVE_POLLER:
+        poller = DrivePoller()
+        poller.start()
+        logger.info("Drive poller started")
+    else:
+        logger.info("Drive poller not available (google-api-python-client not installed)")
+
     logger.info(f"Application configuration: {settings.get_environment_info()}")
     yield
     logger.info("Shutting down Translation Pipeline API")
+
+    # Stop Drive poller if it was started
+    if HAS_DRIVE_POLLER:
+        poller.stop()
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -62,6 +82,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(translate.router, prefix="/api", tags=["translate"])
 app.include_router(jobs.router, prefix="/api", tags=["jobs"])
 app.include_router(sse.router, prefix="/api", tags=["sse"])
+app.include_router(websocket.router, prefix="/api", tags=["websocket"])
 
 @app.get("/health")
 async def health_check():
