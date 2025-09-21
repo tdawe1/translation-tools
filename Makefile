@@ -1,8 +1,8 @@
-.PHONY: estimate derive-tone
+.PHONY: estimate derive-tone docx-ci
 .PHONY: all clean test help
 
 help:
-	@echo "Targets: estimate, derive-tone, test, clean"
+	@echo "Targets: estimate, derive-tone, docx-ci, test, clean"
 
 all: test
 
@@ -17,3 +17,7 @@ estimate:
 
 derive-tone:
 	@./tools/derive_deck_tone.py inputs/68b42f175c652_f711fcda865b11f0b6cecace4a312dcf_en_final_offline_v2.pptx
+
+docx-ci:
+	@python test_cf5_validation.py
+	@echo "DOCX CI validation completed"
