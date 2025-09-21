@@ -16,6 +16,8 @@ import threading
 from ..models.job import Job, JobStatus, TranslationRequest
 from ..core.config import settings
 
+logger = logging.getLogger(__name__)
+
 # Import real-time update functions
 try:
     from ..websocket.manager import manager
@@ -24,8 +26,6 @@ try:
 except ImportError:
     HAS_REALTIME = False
     logger.warning("Real-time update modules not available")
-
-logger = logging.getLogger(__name__)
 
 class JobManager:
     def __init__(self):
@@ -803,3 +803,7 @@ class JobManager:
             conn.close()
         except Exception as e:
             logger.error(f"Failed to update job in database: {e}")
+
+
+# Global instance
+job_manager = JobManager()

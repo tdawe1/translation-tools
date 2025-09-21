@@ -1,14 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import FileResponse
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 import io
 import sqlite3
 import logging
+import os
+from pathlib import Path
 
 from ..models.job import TranslationRequest, JobResponse
 from ..core.job_manager import job_manager
 from ..services.auth_service import auth_service
+from ..core.config import settings
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -291,7 +295,7 @@ async def get_job_logs(
 
 @router.get("/jobs/export")
 async def export_jobs(
-    format: str = Query("csv", regex="^(csv|json)$"),
+    format: str = Query("csv", pattern="^(csv|json)$"),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """Export job data"""
@@ -365,6 +369,50 @@ async def delete_job(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Failed to delete job"
+    )
+
+@router.get("/{job_id}/download")
+async def download_job_result(
+    job_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Download the translated file for a completed job"""
+    user_id = auth_service.verify_token(credentials.credentials)
+
+    # Get job details
+    job = await job_manager.get_job(job_id)
+    if not job or job.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+
+    # Check if job is completed and has output file
+    if job.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Job is not completed yet"
+        )
+
+    if not job.output_file or not os.path.exists(job.output_file):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Output file not found"
+        )
+
+    # Determine media type based on file type
+    media_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    if job.request.file_type == "pdf":
+        media_type = "application/pdf"
+
+    # Generate filename
+    input_path = Path(job.input_file)
+    filename = f"{input_path.stem}_translated{input_path.suffix}"
+
+    return FileResponse(
+        path=job.output_file,
+        filename=filename,
+        media_type=media_type
     )
 
 @router.post("/submit")

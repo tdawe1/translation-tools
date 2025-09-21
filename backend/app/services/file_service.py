@@ -85,3 +85,6 @@ class FileService:
                         file_path.unlink()
                     except Exception as e:
                         print(f"Failed to delete {file_path}: {e}")
+
+# Global file service instance
+file_service = FileService()

@@ -17,7 +17,7 @@ security = HTTPBearer()
 # Store active SSE connections
 active_connections: Dict[str, asyncio.Queue] = {}
 
-@router.get("/sse/subscribe")
+@router.get("/subscribe")
 async def sse_subscribe(
     token: str,
     job_id: str = None,

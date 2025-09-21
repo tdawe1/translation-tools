@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, APIKeyHeader
 from datetime import timedelta
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from ..models.auth import (

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 import warnings
 from pathlib import Path
+from datetime import datetime
 
 # Set up test environment BEFORE any imports
 # Set pytest marker for test environment detection
@@ -219,3 +220,88 @@ def mock_openai(monkeypatch):
     monkeypatch.setattr("app.services.translation.openai", MockOpenAI)
 
     return MockOpenAI
+
+
+@pytest.fixture(scope="function")
+def sample_pptx_file():
+    """Create a minimal PPTX file for testing."""
+    try:
+        from pptx import Presentation
+
+        # Create a simple presentation
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide.shapes.title.text = "テスト"
+        slide.placeholders[1].text = "Test content"
+
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as f:
+            prs.save(f.name)
+            yield f.name
+
+        # Cleanup
+        os.unlink(f.name)
+
+    except ImportError:
+        # If python-pptx is not available, create a minimal mock file
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as f:
+            # Write minimal valid PPTX structure
+            f.write(b"PK\x03\x04")  # ZIP header
+            f.write(b"MOCK_PPTX_FILE" * 100)  # Mock content
+            yield f.name
+        os.unlink(f.name)
+
+
+@pytest.fixture(scope="function")
+def sample_pdf_file():
+    """Create a minimal PDF file for testing."""
+    try:
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+
+        # Create a simple PDF
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            c = canvas.Canvas(f.name, pagesize=letter)
+            c.drawString(100, 750, "テスト")
+            c.drawString(100, 730, "Test PDF content")
+            c.save()
+            yield f.name
+
+        # Cleanup
+        os.unlink(f.name)
+
+    except ImportError:
+        # If reportlab is not available, create a minimal mock file
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(b"%PDF-1.4\n")  # PDF header
+            f.write(b"MOCK_PDF_FILE" * 100)  # Mock content
+            yield f.name
+        os.unlink(f.name)
+
+
+@pytest.fixture(scope="function")
+def mock_job_manager(monkeypatch):
+    """Mock the job manager to avoid actual job processing."""
+    class MockJobManager:
+        def create_job(self, *args, **kwargs):
+            return {
+                "id": "test-job-id",
+                "status": "pending",
+                "created_at": datetime.utcnow().isoformat()
+            }
+
+        def get_job_status(self, job_id):
+            return {
+                "id": job_id,
+                "status": "completed",
+                "progress": 100,
+                "message": "Translation completed",
+                "result_file": f"translated_{job_id}.pptx"
+            }
+
+        def process_translation_job(self, job_id):
+            pass  # Mock processing
+
+    mock_manager = MockJobManager()
+    monkeypatch.setattr("app.core.job_manager.job_manager", mock_manager)
+    return mock_manager

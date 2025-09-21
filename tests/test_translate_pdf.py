@@ -31,12 +31,20 @@ class MockExtractionResult:
     """Mock extraction result for testing."""
     def __init__(self, total_blocks=10, total_japanese_blocks=8):
         self.filename = "test.pdf"
-        self.pages = []
+        self._pages = []
         self.total_blocks = total_blocks
         self.total_japanese_blocks = total_japanese_blocks
         self.extraction_time = 1.0
         self.extraction_methods = ["mock"]
         self.metadata = {}
+    
+    @property
+    def pages(self):
+        return self._pages
+    
+    @pages.setter
+    def pages(self, value):
+        self._pages = list(value) if value is not None else []
 
 
 class MockPage:
@@ -254,6 +262,15 @@ class TestPDFTranslationOrchestrator(unittest.TestCase):
     @patch('scripts.translate_pdf.OPENAI_AVAILABLE', True)
     def test_translate_with_api_mock(self):
         """Test translation with API call (mocked)."""
+        # Initialize orchestrator with offline=False for API calls
+        orchestrator = PDFTranslationOrchestrator(
+            input_path=self.input_pdf,
+            output_path=self.output_pdf,
+            cache_file=self.cache_file,
+            offline=False,  # Enable API calls
+            cache_only=False
+        )
+        
         # Mock the OpenAI client and batch_translate
         with patch('scripts.translate_pdf.OpenAI') as mock_openai, \
              patch('scripts.translate_pdf.batch_translate') as mock_batch_translate:
@@ -261,14 +278,14 @@ class TestPDFTranslationOrchestrator(unittest.TestCase):
             mock_openai.return_value = Mock(api_key="test_key")
             mock_batch_translate.return_value = ["Test"]
             
-            self.orchestrator.cache = {}
+            orchestrator.cache = {}
             text_list = ["テスト"]
             
-            translations = self.orchestrator._translate_with_cache(text_list)
+            translations = orchestrator._translate_with_cache(text_list)
             
             self.assertEqual(translations, {"テスト": "Test"})
-            self.assertEqual(self.orchestrator.stats['cache_hits'], 0)
-            self.assertEqual(self.orchestrator.stats['api_calls'], 1)
+            self.assertEqual(orchestrator.stats['cache_hits'], 0)
+            self.assertEqual(orchestrator.stats['api_calls'], 1)
             
             # Verify OpenAI client was created
             mock_openai.assert_called_once()
@@ -288,13 +305,22 @@ class TestPDFTranslationOrchestrator(unittest.TestCase):
         result = self.orchestrator._filter_pages_by_range(extraction_result)
         self.assertEqual(len(result.pages), 3)
     
-    def test_filter_pages_by_range_specific(self):
+    @patch('scripts.translate_pdf.ExtractionResult')
+    def test_filter_pages_by_range_specific(self, mock_extraction_result):
         """Test page filtering with specific range."""
+        # Create a proper mock for ExtractionResult that behaves like a dataclass
+        mock_result_instance = Mock()
+        mock_result_instance.pages = [
+            MockPage(page_num=1),  # Page 2 (0-based)
+            MockPage(page_num=2)   # Page 3 (0-based)
+        ]
+        mock_extraction_result.return_value = mock_result_instance
+        
         extraction_result = MockExtractionResult()
         extraction_result.pages = [
-            MockPage(page_num=0),  # Page 1 (1-based)
-            MockPage(page_num=1),  # Page 2 (1-based)
-            MockPage(page_num=2)   # Page 3 (1-based)
+            MockPage(page_num=0),  # Page 1 (0-based)
+            MockPage(page_num=1),  # Page 2 (0-based)
+            MockPage(page_num=2)   # Page 3 (0-based)
         ]
         
         self.orchestrator.pages = "2-3"

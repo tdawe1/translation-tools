@@ -72,6 +72,7 @@ except ImportError:
 # ---- OpenAI client (official library) ----
 try:
     from openai import OpenAI, AsyncOpenAI
+from utils.gpt_adapter import GPT5Adapter
 except Exception:
     print("ERROR: The 'openai' package is required. Install via: pip install openai", file=sys.stderr)
     raise
@@ -329,38 +330,19 @@ def make_array_schema(expected_len: int | None):
     }
 
 def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    # OpenAI Responses API with GPT-5 reasoning model
+    # Use adapter for responses
     try:
-        # Configure reasoning effort based on model - high for main translation, minimal for reviews
-        if model.startswith("gpt-5-mini"):
-            effort = "minimal"  # Fast reviewer
-        else:
-            effort = os.getenv("OPENAI_REASONING_EFFORT", "high")  # Deep thinking for translation
-        
-        resp = client.responses.create(
+        input_data = [
+            {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
+        ]
+        resp = client.responses_create(
             model=model,
-            input=[
-                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
-                {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
-            ],
-            reasoning={"effort": effort},
-            text={"verbosity": "low"},  # Concise responses, avoid chatty prose
+            input=input_data,
             temperature=temperature,
-            response_format={"type": "json"},
+            # reasoning and text stripped by adapter
         )
-        # New SDKs expose output_text; fall back if absent
-        content = getattr(resp, "output_text", None)
-        if not content:
-            # Fallback to choices/message style if present
-            if getattr(resp, "choices", None):
-                content = resp.choices[0].message.content
-        if not content and getattr(resp, "output", None):
-            try:
-                # Attempt to read the first text content
-                content = resp.output[0].content[0].text
-            except Exception:
-                content = None
-        return content.strip() if content else ""
+        return resp.strip() if resp else ""
     except Exception:
         raise
 

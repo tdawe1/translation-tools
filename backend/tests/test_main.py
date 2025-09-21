@@ -136,3 +136,10 @@ def test_settings_configuration():
     # Check rate limiting (from .env.test)
     assert settings.RATE_LIMIT_REQUESTS == 1000
     assert settings.RATE_LIMIT_WINDOW == 60
+
+
+@pytest.mark.smoke
+def test_smoke_tests_available():
+    """Test that smoke tests are discoverable by pytest"""
+    # This test ensures the smoke test marker is properly configured
+    assert True

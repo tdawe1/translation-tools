@@ -283,3 +283,5 @@ class AuthService:
             is_active=user.is_active,
             created_at=user.created_at
         )
+# Global auth service instance
+auth_service = AuthService()

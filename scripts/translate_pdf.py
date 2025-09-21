@@ -37,10 +37,10 @@ from typing import Dict, List, Any, Optional, Tuple
 
 # Import PDF translation components
 try:
-    from extract_pdf import PDFExtractor, ExtractionResult
-    from pdf_layout_engine import PDFLayoutEngine, TextBlock, ContentType, LayoutConstraint
-    from apply_pdf_translation import PDFBackProjector
-    from audit_pdf import PDFAuditor
+    from .extract_pdf import PDFExtractor, ExtractionResult
+    from .pdf_layout_engine import PDFLayoutEngine, TextBlock, ContentType, LayoutConstraint
+    from .apply_pdf_translation import PDFBackProjector
+    from .audit_pdf import PDFAuditor
     PDF_COMPONENTS_AVAILABLE = True
 except ImportError as e:
     print(f"ERROR: PDF translation components not found: {e}")
@@ -49,7 +49,7 @@ except ImportError as e:
 
 # Import PPTX translation system components
 try:
-    from translate_pptx_inplace import (
+    from .translate_pptx_inplace import (
         backup_existing_files, 
         get_timestamped_filename,
         batch_translate
@@ -62,6 +62,7 @@ except ImportError:
 # OpenAI client (if available)
 try:
     from openai import OpenAI, AsyncOpenAI
+    from utils.gpt_adapter import GPT5Adapter
     OPENAI_AVAILABLE = True
 except ImportError:
     print("WARNING: OpenAI package not available - translation will be disabled")
@@ -269,16 +270,19 @@ class PDFTranslationOrchestrator:
             else:
                 uncached.append(text)
         
-        if uncached and not self.offline and not self.cache_only:
+        if uncached and self.cache_only:
+            raise ValueError("Cache-only mode: Missing translations in cache")
+        elif uncached and not self.offline and not self.cache_only:
             if not OPENAI_AVAILABLE or not PPTX_SYSTEM_AVAILABLE:
                 logger.error("Translation requires OpenAI client and PPTX system")
                 return {}
             
             try:
-                # Initialize OpenAI client
-                client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                if not client.api_key:
-                    raise ValueError("OPENAI_API_KEY environment variable not set")
+# Initialize GPT Adapter
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    raise ValueError("OPENAI_API_KEY environment variable not set")
+client = GPT5Adapter(api_key=api_key)
                 
                 # Use PPTX batch translate function
                 logger.info(f"Translating {len(uncached)} uncached items with {self.model}")
@@ -306,9 +310,11 @@ class PDFTranslationOrchestrator:
                 for text in uncached:
                     translations[text] = text
                     self.cache[text] = text
-        
-        elif self.cache_only and uncached:
-            logger.warning(f"Cache-only mode: {len(uncached)} items not found in cache")
+        elif self.offline and uncached:
+            # In offline mode, use original text as translation for uncached items
+            for text in uncached:
+                translations[text] = text
+                self.cache[text] = text
         
         # Return all translations
         return translations

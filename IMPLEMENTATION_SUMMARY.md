@@ -72,6 +72,24 @@ Successfully implemented a comprehensive PDF back-projector (`apply_pdf_translat
 5. **Apply Adjustments**: Font scaling and layout modifications
 6. **Preserve Formatting**: Copy non-text elements from original
 
+## Integration with Translation Pipeline
+
+### Backend Architecture
+The PDF back-projector integrates seamlessly with the existing translation pipeline:
+
+1. **Shared Translation Engine**: Reuses the same AI translation and caching logic as PPTX
+2. **Unified Cache**: Shares `translation_cache.json` with PPTX translations
+3. **Common Glossary**: Uses the same `glossary.json` for consistent terminology
+4. **Batch Processing**: Integrates with existing batch translation system
+5. **Audit Compatibility**: Works with existing audit tools for quality assurance
+
+### Data Flow
+1. **Extraction**: `extract_pdf.py` extracts Japanese text blocks with formatting
+2. **Translation**: Shared translation engine processes text through AI/cache
+3. **Back-projection**: This module applies translations to the PDF
+4. **Layout Adjustment**: Automatic font scaling handles text expansion
+5. **Final Output**: Generates translated PDF with preserved formatting
+
 ## Integration Capabilities
 
 ### Input Sources
@@ -85,17 +103,6 @@ Successfully implemented a comprehensive PDF back-projector (`apply_pdf_translat
 - **Layout Integrity**: No unintended layout changes
 - **Readability**: Font scaling produces readable text
 
-## Performance Characteristics
-
-### Processing Speed
-- **Small Documents** (< 10 pages): 2-5 seconds
-- **Medium Documents** (10-50 pages): 5-15 seconds
-- **Large Documents** (> 50 pages): 15-60 seconds
-
-### Memory Usage
-- **Typical Usage**: 50-200 MB RAM
-- **Large Documents**: Up to 1 GB RAM for complex layouts
-
 ## Testing Coverage
 
 ### Test Categories
@@ -103,29 +110,86 @@ Successfully implemented a comprehensive PDF back-projector (`apply_pdf_translat
 - **Integration Tests**: End-to-end document processing
 - **Error Handling**: Exception scenarios and edge cases
 - **Performance Tests**: Large document processing capabilities
+- **Clean Environment Tests**: Tests that run without external dependencies
 
 ### Test Results
 - **18/18 Tests Passing**: 100% success rate
 - **Coverage**: All major functionality tested
 - **Mocking**: Comprehensive mocking for PDF operations
 
+### Running Tests
+
+The project includes several ways to run tests:
+
+```bash
+# Run all tests
+make test-all
+
+# Run PDF-specific tests
+make test-pdf
+
+# Run tests in a clean environment
+make test-clean
+
+# Run with proper PYTHONPATH
+PYTHONPATH=. python -m pytest tests/test_apply_pdf_translation.py -v
+```
+
+## Configuration
+
+### Environment Setup
+
+For a clean checkout, you'll need to:
+
+1. Install dependencies:
+   ```bash
+   make setup
+   ```
+
+2. Set up your environment variables:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your actual API keys and configuration
+   ```
+
+3. Verify dependencies:
+   ```bash
+   make verify-deps
+   ```
+
+### Required Dependencies
+
+- **PyMuPDF (fitz)**: Core PDF processing library
+- **Python Standard Library**: json, logging, argparse, pathlib, re, typing
+
+### Optional Dependencies
+
+- **Pillow**: Enhanced image and color processing
+- **pytest**: Testing framework
+- **Development tools**: black, flake8, mypy
+
 ## Usage Examples
 
 ### Basic Usage
 ```bash
-python scripts/apply_pdf_translation.py \
-  --input original.pdf \
-  --output translated.pdf \
+python scripts/apply_pdf_translation.py \\
+  --input original.pdf \\
+  --output translated.pdf \\
   --translations translations.json
 ```
 
 ### Advanced Usage
 ```bash
-python scripts/apply_pdf_translation.py \
-  --input document.pdf \
-  --output translated_document.pdf \
-  --translations translations.json \
+python scripts/apply_pdf_translation.py \\
+  --input document.pdf \\
+  --output translated_document.pdf \\
+  --translations translations.json \\
   --verbose
+```
+
+### Using Makefile (Recommended)
+```bash
+make translate-pdf INPUT=document.pdf OUTPUT=translated_document.pdf
 ```
 
 ## Dependencies
@@ -138,6 +202,29 @@ python scripts/apply_pdf_translation.py \
 - **Pillow**: Enhanced image and color processing
 - **pytest**: Testing framework
 - **Development tools**: black, flake8, mypy
+
+### Installation
+
+To install all dependencies:
+
+```bash
+# Install core dependencies
+pip install -r requirements.txt
+
+# Install PDF-specific dependencies
+pip install -r requirements_pdf.txt
+
+# Or use the Makefile target
+make setup
+```
+
+### Verification
+
+To verify all dependencies are installed correctly:
+
+```bash
+make verify-deps
+```
 
 ## Success Criteria Met
 

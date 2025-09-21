@@ -136,3 +136,48 @@ async def list_supported_formats(
     }
 
     return {"formats": formats}
+
+@router.post("/translate/pptx", response_model=JobResponse)
+async def create_pptx_translation_job(
+    file: UploadFile = File(...),
+    model: str = "gpt-4o-2024-08-06",
+    temperature: float = 0.6,
+    offline: bool = False,
+    auto_fit: str = "norm",
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Create a new PPTX translation job"""
+    user_id = auth_service.verify_token(credentials.credentials)
+
+    if auto_fit not in ["norm", "shape", "none"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="auto_fit must be one of: norm, shape, none"
+        )
+
+    try:
+        input_file_path = await file_service.save_upload_file(file, user_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save file: {str(e)}"
+        )
+
+    request = TranslationRequest(
+        file_type="pptx",
+        model=model,
+        temperature=temperature,
+        offline=offline,
+        pages=None,
+        auto_fit=auto_fit
+    )
+
+    job = await job_manager.create_job(
+        user_id=user_id,
+        input_file=input_file_path,
+        request=request
+    )
+
+    return JobResponse(job=job)
