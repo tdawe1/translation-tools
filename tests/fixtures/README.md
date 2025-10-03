@@ -112,7 +112,7 @@ The `tests/fixtures/uploads/complex/` directory contains fixtures for more intri
 
 **Test Assertions:**
 - `unzip -l` returns 4 files.
-- `python-docx`: `doc = Document(path); assert 'https://example.com' in doc.paragraphs[0].runs[0].hyperlink.target if supported`
+- `python-docx`: `doc = Document(path); # Note: Hyperlink targets require XML parsing or relationship traversal`
 - Links unchanged after translation.
 
 ### fields.docx
