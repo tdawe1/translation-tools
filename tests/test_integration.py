@@ -240,7 +240,7 @@ class TestTranslationIntegration:
         # Start a translation job
         with open(sample_docx_content, 'rb') as f:
             upload_response = client.post(
-                "/api/translate/translate",
+                "/api/translate",
                 files={"file": ("test.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
             )
 
@@ -250,7 +250,6 @@ class TestTranslationIntegration:
         download_response = client.get(f"/api/translate/{job_id}/download")
         assert download_response.status_code == 400
         assert "Translation not completed" in download_response.json()["detail"]
-
     def test_invalid_glossary_format(self, client, sample_docx_content):
         """Test rejection of invalid glossary JSON."""
         with open(sample_docx_content, 'rb') as f:
