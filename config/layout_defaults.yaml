@@ -1,0 +1,8 @@
+autofit_mode: norm
+font_scale_min: 80000
+line_spacing_pct: 100000
+tight_margins:
+  lIns: 45720
+  rIns: 45720
+  tIns: 22860
+  bIns: 22860

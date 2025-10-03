@@ -136,6 +136,59 @@ def _apply_run_formatting(run, is_title=False):
         brand_font = "Inter"  # Default professional font, can be customized
         latin.set("typeface", brand_font)
 
+def _apply_footer_format(txBody):
+    """Apply conservative formatting for footers (footer, slide number, date).
+    Keeps font small to avoid wrapping and reduces line spacing.
+    """
+    # Body properties: tight margins + shrink-to-fit
+    bodyPr = txBody.find(A_NS + "bodyPr")
+    if bodyPr is None:
+        bodyPr = ET.SubElement(txBody, A_NS + "bodyPr")
+    bodyPr.set("lIns", "12700")  # 1pt
+    bodyPr.set("rIns", "12700")
+    bodyPr.set("tIns", "6350")   # 0.5pt
+    bodyPr.set("bIns", "6350")
+    bodyPr.set("wrap", "square")
+
+    # Enable shrink-to-fit with stronger reduction for footers
+    # fontScale is percent * 1000
+    normAutofit = bodyPr.find(A_NS + "normAutofit")
+    if normAutofit is None:
+        normAutofit = ET.SubElement(bodyPr, A_NS + "normAutofit")
+    normAutofit.set("fontScale", "80000")       # allow to 80%
+    normAutofit.set("lnSpcReduction", "20000")  # up to 20% reduction
+
+    # Paragraph-level: 100% line spacing, no extra spacing
+    for para in txBody.iter(A_NS + "p"):
+        pPr = para.find(A_NS + "pPr")
+        if pPr is None:
+            pPr = ET.SubElement(para, A_NS + "pPr")
+        lnSpc = pPr.find(A_NS + "lnSpc")
+        if lnSpc is None:
+            lnSpc = ET.SubElement(pPr, A_NS + "lnSpc")
+        spcPct = lnSpc.find(A_NS + "spcPct")
+        if spcPct is None:
+            spcPct = ET.SubElement(lnSpc, A_NS + "spcPct")
+        spcPct.set("val", "100000")
+
+        # Runs: force small, consistent size (9pt) unless already smaller
+        for run in para.iter(A_NS + "r"):
+            rPr = run.find(A_NS + "rPr")
+            if rPr is None:
+                rPr = ET.SubElement(run, A_NS + "rPr")
+            try:
+                sz = int(rPr.get("sz", "0"))
+            except ValueError:
+                sz = 0
+            target = 900  # 9pt in half-points
+            if sz == 0 or sz > target:
+                rPr.set("sz", str(target))
+            latin = rPr.find(A_NS + "latin")
+            if latin is None:
+                latin = ET.SubElement(rPr, A_NS + "latin")
+            if not latin.get("typeface"):
+                latin.set("typeface", "Inter")
+
 def apply_deck_formatting_profile(root):
     """
     Apply formatting profile to entire slide, detecting content types.
@@ -146,20 +199,41 @@ def apply_deck_formatting_profile(root):
     # To reliably find the parent shape of a text body, we must iterate through shapes, not all elements.
     # This avoids the use of getparent(), which is not available in xml.etree.ElementTree.
     for shape in root.iter(P_NS + "sp"):
+        ph_type = None
         is_title = False
-        # Check for title placeholders in shape properties
+        # Check for placeholder types in shape properties
         nvSpPr = shape.find(".//" + P_NS + "nvSpPr")
         if nvSpPr is not None:
             nvPr = nvSpPr.find(P_NS + "nvPr")
             if nvPr is not None:
                 ph = nvPr.find(P_NS + "ph")
-                if ph is not None and ph.get("type") in ["title", "ctrTitle"]:
-                    is_title = True
+                if ph is not None:
+                    ph_type = ph.get("type")
+                    if ph_type in ["title", "ctrTitle"]:
+                        is_title = True
+
+        # Determine if this is a footer-like placeholder
+        is_footer = ph_type in {"ftr", "sldNum", "dt", "hdr"}
+
+        # Fallback detection: if text contains 'Confidential'
+        if not is_footer:
+            # Look for text content
+            text_concat = []
+            for t in shape.iter(A_NS + "t"):
+                if t.text:
+                    text_concat.append(t.text)
+            if text_concat:
+                combined = " ".join(text_concat).strip().lower()
+                if "confidential" in combined:
+                    is_footer = True
 
         # Apply formatting to the text body within the shape
         txBody = shape.find(".//" + A_NS + "txBody")
         if txBody is not None:
-            apply_textframe_profile_xml(txBody, is_title=is_title)
+            if is_footer:
+                _apply_footer_format(txBody)
+            else:
+                apply_textframe_profile_xml(txBody, is_title=is_title)
 
 def get_formatting_statistics(root) -> dict:
     """

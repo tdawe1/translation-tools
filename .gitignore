@@ -3,7 +3,14 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Test artifacts
+test_translation_pipeline.db
+test_uploads/
+test_outputs/
+*.pytest_cache
+
 # Environments
+.env.test
 .env
 .last_translate
 .claude/

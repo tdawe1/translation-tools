@@ -1,0 +1,33 @@
+# PDF Back-Projector Dependencies
+# Install these dependencies to use the PDF translation back-projector
+
+# Core PDF processing library
+PyMuPDF>=1.22.0
+
+# Fallback text extraction library for complex layouts
+pdfplumber>=0.9.0
+
+# PDF text extraction and analysis
+pdfminer.six>=20221105
+
+# PDF manipulation and analysis
+pypdf>=3.0.0
+
+# Optional: For enhanced image and color processing
+Pillow>=9.0.0
+
+# Testing dependencies (optional)
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
+# WebSocket server for real-time updates
+websockets>=11.0.0
+
+# SSE fallback server dependencies
+aiohttp>=3.8.0
+aiohttp-cors>=0.7.0
+
+# Development dependencies (optional)
+black>=22.0.0
+flake8>=5.0.0
+mypy>=1.0.0

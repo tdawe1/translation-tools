@@ -1,6 +1,6 @@
-# 🚀 PowerPoint Translation Pipeline (JA→EN)
+# 🚀 Document Translation Pipeline (JA→EN)
 
-A production-ready translation system for converting Japanese PowerPoint presentations to English while preserving layout, formatting, and visual elements.
+A production-ready translation system for converting Japanese PowerPoint presentations **and PDF documents** to English while preserving layout, formatting, and visual elements.
 
 <details>
 <summary><strong>📊 Project Status Summary (Today)</strong></summary>
@@ -227,6 +227,7 @@ If you want, I can turn this into three small PRs: (1) Drive poller + job runner
 ## ✨ Features
 
 ### 🎯 **Production-Ready Translation**
+- **Multi-format support**: PowerPoint presentations AND PDF documents
 - **Smart batch sizing**: Auto-optimizes API requests per model
 - **Comprehensive logging**: Real-time progress with ETA estimates  
 - **Robust error handling**: Auto-retry with intelligent backoff
@@ -242,14 +243,56 @@ If you want, I can turn this into three small PRs: (1) Drive poller + job runner
 - **Translation caching**: Avoids re-translating identical content
 - **Bilingual output**: CSV mapping for quality assurance
 - **Performance metrics**: Detailed audit reports and statistics
+- **Page range support**: Translate specific sections of PDFs
+- **Fallback extraction**: PyMuPDF + pdfplumber for complex layouts
 - **Webhook integration**: Real-time progress tracking (optional)
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-```bash
-export OPENAI_API_KEY=your_key_here
-```
+1. Python 3.8 or higher
+2. Required Python packages:
+   ```bash
+   pip install -r requirements.txt
+   pip install -r requirements_pdf.txt  # For PDF translation support
+   ```
+3. OpenAI API key:
+   ```bash
+   export OPENAI_API_KEY=your_key_here
+   ```
+   
+   Or create a `.env` file based on `.env.sample`:
+   ```bash
+   cp .env.sample .env
+   # Edit .env with your actual values
+   ```
+
+### Environment Setup
+For a clean checkout, you'll need to:
+
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   pip install -r requirements_pdf.txt
+   ```
+
+2. Set up your environment variables:
+   ```bash
+   cp .env.sample .env
+   # Edit .env with your actual API keys and configuration
+   ```
+
+3. (Optional) Create a glossary file for consistent terminology:
+   ```bash
+   cp glossary.example.json glossary.json
+   # Edit glossary.json with your custom terms
+   ```
+
+4. (Optional) Create a pricing file for cost estimation:
+   ```bash
+   cp pricing.example.json pricing.json
+   # Edit pricing.json with current model pricing
+   ```
 
 ### Basic Usage
 ```bash
@@ -264,6 +307,65 @@ python scripts/translate_pptx_inplace.py \
   --in input.pptx \
   --out output_en.pptx \
   --model gpt-4o-mini
+```
+
+## 📄 PDF Translation
+
+The pipeline now supports Japanese-to-English translation for PDF documents with the same quality and layout preservation as the PPTX system.
+
+### Quick Start - PDF Translation
+
+```bash
+# Basic PDF translation
+python scripts/translate_pdf.py --in document.pdf --out document_en.pdf
+
+# Cost estimation for PDF
+python tools/estimate_cost_pdf.py document.pdf
+
+# Using Makefile (recommended)
+make translate-pdf INPUT=document.pdf OUTPUT=document_en.pdf
+make estimate-pdf PDF_INPUT=document.pdf
+```
+
+### PDF-Specific Features
+
+- **Layout Preservation**: Maintains original formatting, fonts, and positioning
+- **Page Range Support**: Translate specific pages or ranges (e.g., `--pages 1-10`)
+- **Smart Text Extraction**: Uses PyMuPDF with pdfplumber fallback for complex layouts
+- **Japanese Text Detection**: Automatically identifies and extracts Japanese content
+- **Batch Processing**: Same intelligent batching as PPTX for optimal API usage
+- **Cache Integration**: Reuses existing translation cache for cost savings
+
+### PDF Command Line Options
+
+```bash
+python scripts/translate_pdf.py [OPTIONS]
+
+Required:
+  --in INPUT.pdf       Input PDF file
+  --out OUTPUT.pdf     Output translated PDF file
+
+Optional:
+  --model MODEL        AI model (default: gpt-4o-2024-08-06)
+  --pages PAGES        Page range (e.g., 1-10, 5)
+  --glossary FILE      Custom glossary file
+  --cache FILE         Cache file path
+  --cache-only         Use only cached translations
+  --offline            Run in offline mode
+  --verbose            Enable detailed logging
+```
+
+### PDF Cost Estimation
+
+```bash
+# Basic cost estimation
+python tools/estimate_cost_pdf.py document.pdf
+
+# With specific model and pages
+python tools/estimate_cost_pdf.py document.pdf --model openai:gpt-5 --pages 1-20
+
+# Using Makefile
+make estimate-pdf PDF_INPUT=document.pdf MODEL=openai:gpt-5 PAGES=1-20
 ```
 
 ## 🎛️ Production Presets
@@ -311,15 +413,153 @@ Optional:
 └── data/                        # Glossaries and configs
 ```
 
-## 🔧 Advanced Configuration
+## 🧪 Testing
 
-### Custom Glossary
+The project includes comprehensive tests for both PPTX and PDF translation pipelines. 
+
+### Running Tests
+
+Use the Makefile targets for consistent test execution:
+
+```bash
+# Run all tests
+make test-all
+
+# Run PPTX tests only
+make test
+
+# Run PDF tests only
+make test-pdf
+
+# Run PDF quality metrics tests (more reliable)
+make test-quality
+
+# Run PDF integration tests
+make test-integration
+
+# Run tests in a clean environment (no external dependencies)
+make test-clean
+
+# Verify all dependencies are installed
+make verify-deps
+
+# Install all dependencies
+make setup
+```
+
+### Test Environment
+
+For testing in a clean checkout:
+
+1. Install test dependencies:
+   ```bash
+   make setup
+   ```
+
+2. Run tests with proper PYTHONPATH:
+   ```bash
+   make test-all
+   ```
+
+3. For offline testing (without API calls):
+   ```bash
+   # Set environment variable
+   export TEST_MODE=offline
+   
+   # Or add to your .env file
+   echo "TEST_MODE=offline" >> .env
+   ```
+
+### Test Structure
+
+- `tests/test_translate_pdf.py` - Core PDF translation orchestrator tests
+- `tests/test_pdf_quality_metrics.py` - Quality metrics enforcement tests
+- `tests/test_pdf_integration.py` - End-to-end integration tests
+- `tests/test_extract_pdf.py` - PDF text extraction tests
+- `tests/test_apply_pdf_translation.py` - PDF back-projection tests
+- `tests/test_clean_environment.py` - Tests that run in clean environments
+
+### Continuous Integration
+
+For CI environments, ensure:
+1. All dependencies are installed (`make setup`)
+2. PYTHONPATH includes the project root
+3. Required environment variables are set (or tests run in offline mode)
+4. Test data files are available in `tests/data/`
+
+## 🏗️ Architecture
+
+### Backend Architecture
+
+The translation pipeline follows a modular architecture with separate components for different document types:
+
+1. **Core Translation Engine**: Shared AI translation and caching logic for both PPTX and PDF
+2. **Document Abstraction Layer**: Interface for different document types (PPTX, PDF, future formats)
+3. **Format-Specific Processors**: 
+   - PPTX: Direct XML manipulation for text replacement
+   - PDF: PyMuPDF-based extraction and back-projection
+4. **Layout Engine**: Handles text expansion and formatting preservation
+5. **Audit System**: Quality assurance and residual Japanese detection
+
+### Key Technologies
+
+- **Python 3.8+** as the primary language
+- **OpenAI API** for machine translation
+- **PyMuPDF (fitz)** for PDF processing
+- **XML parsing** for PPTX manipulation
+- **Make** for workflow automation
+- **pytest** for testing
+- **Make** for workflow automation
+- **pytest** for testing
+
+### Data Flow
+
+1. **Extraction**: Document-specific extraction of Japanese text with formatting
+2. **Translation**: AI-powered translation with intelligent caching
+3. **Back-projection**: Format-specific application of translations
+4. **Layout Adjustment**: Font scaling and positioning optimization
+5. **Audit**: Quality checks and bilingual output generation
+
+## ⚙️ Configuration
+
+### Environment Variables
+
+Create a `.env` file based on `.env.sample`:
+
+```bash
+# Copy the sample file
+cp .env.sample .env
+
+# Edit with your actual values
+nano .env
+```
+
+Key configuration options:
+- `OPENAI_API_KEY`: Required for AI translation
+- `TEST_MODE`: Set to "offline" for testing without API calls
+- `CACHE_FILE`: Path to translation cache (default: translation_cache.json)
+- `GLOSSARY_FILE`: Path to custom glossary (default: glossary.json)
+
+### Glossary
+
 Create `glossary.json` for consistent terminology:
 ```json
 {
-  "株式会社": "Corporation",
-  "取締役": "Director",
-  "戦略": "Strategy"
+  "株式会社サンプル": "Sample Corp.",
+  "ウェビナー": "webinar",
+  "リード獲得": "lead generation",
+  "BtoB": "B2B"
+}
+```
+
+### Pricing
+
+For cost estimation, create `pricing.json`:
+```json
+{
+  "_meta": { "schema_version": 1, "currency": "USD", "unit": "per_1M_tokens" },
+  "openai:gpt-4.1": { "in": 2.00, "in_cached": 1.00, "out": 10.00, "tokenizer": "o200k_base" },
+  "openai:gpt-4o-mini": { "in": 0.15, "in_cached": 0.075, "out": 0.60, "tokenizer": "o200k_base" }
 }
 ```
 

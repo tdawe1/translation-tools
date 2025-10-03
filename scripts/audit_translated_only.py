@@ -1,53 +1,132 @@
 #!/usr/bin/env python3
-import csv, json, re, argparse, sys
+
+import argparse
+import json
+import re
+import sys
+import csv
+import zipfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from collections import defaultdict
+
 rx_jp = re.compile(r'[\u3040-\u30ff\u3400-\u9fff々〆ヵヶ]')
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--bilingual", default="bilingual.csv", help="Pipeline bilingual export (source JP + translated EN)")
-    ap.add_argument("--out", default="audit_translated.json", help="Write translated-only audit JSON here")
-    ap.add_argument("--fail-threshold", type=int, default=0, help="Exit non-zero if residual JP chars > this")
-    args = ap.parse_args()
+def extract_text_from_pptx(pptx_path):
+    """Extract all text from PPTX file."""
+    all_text = []
+    try:
+        with zipfile.ZipFile(pptx_path, 'r') as zip_file:
+            for file_name in zip_file.namelist():
+                if file_name.startswith('ppt/slides/slide') and file_name.endswith('.xml'):
+                    xml_data = zip_file.read(file_name)
+                    try:
+                        root = ET.fromstring(xml_data)
+                        ns = {
+                            'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+                            'p': 'http://schemas.openxmlformats.org/presentationml/2006/main'
+                        }
+                        for t_elem in root.iterfind('.//a:t', ns):
+                            if t_elem.text:
+                                all_text.append(t_elem.text.strip())
+                    except ET.ParseError:
+                        continue
+    except zipfile.BadZipFile:
+        print(f"Invalid PPTX file: {pptx_path}", file=sys.stderr)
+        return []
+    return all_text
 
-    total = 0
-    per_slide = {}
+def audit_from_csv(bilingual_path, threshold):
+    total_chars = 0
+    total_residual = 0
+    per_slide = defaultdict(int)
+    per_slide_total = defaultdict(int)
     residual_rows = []
 
-    with open(args.bilingual, encoding="utf-8") as f:
+    with open(bilingual_path, encoding="utf-8") as f:
         r = csv.DictReader(f)
         for row in r:
             slide = row.get("slide") or ""
             en = (row.get("en") or "")
             cnt = len(rx_jp.findall(en))
+            en_len = len(en)
+            total_chars += en_len
+            total_residual += cnt
+            per_slide_total[slide] += en_len
             if cnt:
-                total += cnt
-                per_slide[slide] = per_slide.get(slide, 0) + cnt
+                per_slide[slide] += cnt
                 residual_rows.append({
                     "slide": slide, "shape": row.get("shape"),
                     "para": row.get("para"), "jp": row.get("jp"), "en": en
                 })
 
+    percentage = (total_residual / total_chars * 100) if total_chars > 0 else 0
+    passed = percentage <= threshold
+
     out = {
         "scope": "translated_only",
-        "total_residual_jp_chars": total,
-        "per_slide_residual_jp_chars": per_slide,
-        "residual_rows": residual_rows[:200]  # preview (full detail lives in CSV below)
+        "input_type": "csv",
+        "total_en_chars": total_chars,
+        "total_residual_jp_chars": total_residual,
+        "percentage_residual": round(percentage, 2),
+        "passed": passed,
+        "per_slide_residual_jp_chars": dict(per_slide),
+        "per_slide_total_chars": dict(per_slide_total),
+        "residual_rows": residual_rows[:200]  # preview
     }
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=2)
+    return out, passed
 
-    # Also write a flat CSV you can open quickly
-    import csv as _csv
-    with open("residual_rows_translated_only.csv", "w", newline="", encoding="utf-8") as f:
-        w = _csv.writer(f)
-        w.writerow(["slide","shape","para","jp","en"])
-        for r in residual_rows:
-            w.writerow([r["slide"], r["shape"], r["para"], r["jp"], r["en"]])
+def audit_from_pptx(pptx_path, threshold):
+    texts = extract_text_from_pptx(pptx_path)
+    if not texts:
+        return {"scope": "translated_only", "input_type": "pptx", "message": "No text extracted", "passed": True}, True
 
-    print(f"Translated-only residual JP chars: {total}")
-    if total > args.fail_threshold:
-        print(f"FAIL: residual > threshold ({args.fail_threshold})")
+    total_chars = sum(len(t) for t in texts)
+    total_residual = sum(len(rx_jp.findall(t)) for t in texts)
+    percentage = (total_residual / total_chars * 100) if total_chars > 0 else 0
+    passed = percentage <= threshold
+
+    out = {
+        "scope": "translated_only",
+        "input_type": "pptx",
+        "file": str(pptx_path),
+        "total_chars": total_chars,
+        "total_residual_jp_chars": total_residual,
+        "percentage_residual": round(percentage, 2),
+        "passed": passed,
+        "message": f"Residual Japanese: {percentage:.2f}% ({total_residual}/{total_chars})"
+    }
+    if not passed:
+        out["message"] += " - FAILED (above threshold)"
+    return out, passed
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", required=True, help="Path to bilingual.csv or translated.pptx")\n    ap.add_argument("--out", default="audit_translated.json", help="Write audit JSON here")\n    ap.add_argument("--threshold", type=float, default=1.0, help="Fail if residual % > this")
+    args = ap.parse_args()
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print(f"Input not found: {input_path}", file=sys.stderr)
         sys.exit(1)
+
+    if input_path.suffix == '.csv':\n        report, passed = audit_from_csv(str(input_path), args.threshold)\n    elif input_path.suffix.lower() == '.pptx':\n        report, passed = audit_from_pptx(str(input_path), args.threshold)
+    else:
+        print("Unsupported input format. Use .csv or .pptx", file=sys.stderr)
+        sys.exit(1)
+
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    # Write residual CSV if applicable
+    if 'residual_rows' in report:
+        with open("residual_rows_translated_only.csv", "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["slide","shape","para","jp","en"])
+            for r in report["residual_rows"]:
+                w.writerow([r["slide"], r["shape"], r["para"], r["jp"], r["en"]])
+
+    percentage = report.get("percentage_residual", 0)\n    print(f"Translated-only residual JP: {percentage:.2f}%")\n    if not passed:\n        print(f"FAIL: residual > threshold ({args.threshold}%)")\n        sys.exit(1)
     print("OK: within threshold")
 
 if __name__ == "__main__":

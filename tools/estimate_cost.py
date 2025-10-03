@@ -28,9 +28,9 @@ from collections import defaultdict
 PRICING = {
     # OpenAI — official API pricing page
     # https://openai.com/api/pricing/
-    "openai:gpt-5":       {"in": 1.25, "in_cached": 0.125, "out": 10.00, "tokenizer": "o200k_base"},
-    "openai:gpt-5-mini":  {"in": 0.25, "in_cached": 0.025, "out":  2.00, "tokenizer": "o200k_base"},
-    "openai:gpt-5-nano":  {"in": 0.05, "in_cached": 0.005, "out":  0.40, "tokenizer": "o200k_base"},
+"openai:gpt-5":       {"in": 1.25, "in_cached": 0.125, "out": 10.00, "tokenizer": "o200k_base", "fallback": "gpt-4o-2024-08-06"},
+"openai:gpt-5-mini":  {"in": 0.25, "in_cached": 0.025, "out":  2.00, "tokenizer": "o200k_base", "fallback": "gpt-4o-mini"},
+"openai:gpt-5-nano":  {"in": 0.05, "in_cached": 0.005, "out":  0.40, "tokenizer": "o200k_base", "fallback": "gpt-4o-mini"},
     "openai:gpt-4o":      {"in": 2.50, "in_cached": 1.25,  "out": 10.00, "tokenizer": "o200k_base"},
     "openai:gpt-4o-mini": {"in": 0.60, "in_cached": 0.30,  "out":  2.40, "tokenizer": "o200k_base"},
     # GPT-4.1: OpenAI page currently shows FT pricing, not base per-token usage.

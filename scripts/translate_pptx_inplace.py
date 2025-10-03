@@ -27,6 +27,8 @@ import asyncio
 import argparse, json, os, re, shutil, sys, time, zipfile, logging
 from xml.etree import ElementTree as ET
 from pathlib import Path
+from .pptx_extractor import PptxExtractor
+import yaml
 from datetime import datetime
 
 def get_timestamped_filename(filepath):
@@ -72,6 +74,7 @@ except ImportError:
 # ---- OpenAI client (official library) ----
 try:
     from openai import OpenAI, AsyncOpenAI
+    from utils.gpt_adapter import GPTAdapter
 except Exception:
     print("ERROR: The 'openai' package is required. Install via: pip install openai", file=sys.stderr)
     raise
@@ -234,26 +237,7 @@ def set_para_text(p_el, new_text: str):
         last_t = runs[-1].find(t_tag)
         last_t.text = (last_t.text or "") + tail
 
-def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set | None = None):
-    """Return a flat list of (slide_name, paragraph_index, text)."""
-    paras = []
-    slide_files = sorted([n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")])
 
-    if slide_range:
-        filtered_slides = []
-        for sf in slide_files:
-            match = re.search(r'slide(\d+)\.xml', sf)
-            if match and int(match.group(1)) in slide_range:
-                filtered_slides.append(sf)
-        slide_files = filtered_slides
-
-    for sf in slide_files:
-        root = ET.fromstring(z.read(sf))
-        for idx, p_el in enumerate(root.iter(A_NS + "p")):
-            text = normalize_para_text(p_el)
-            if text.strip():
-                paras.append((sf, idx, text))
-    return paras, slide_files
 
 def _ensure_autofit(root):
     # For every txBody, ensure <a:bodyPr><a:normAutofit/></a:bodyPr>
@@ -329,38 +313,19 @@ def make_array_schema(expected_len: int | None):
     }
 
 def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    # OpenAI Responses API with GPT-5 reasoning model
+    # Use adapter for responses
     try:
-        # Configure reasoning effort based on model - high for main translation, minimal for reviews
-        if model.startswith("gpt-5-mini"):
-            effort = "minimal"  # Fast reviewer
-        else:
-            effort = os.getenv("OPENAI_REASONING_EFFORT", "high")  # Deep thinking for translation
-        
-        resp = client.responses.create(
+        input_data = [
+            {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
+        ]
+        resp = client.responses_create(
             model=model,
-            input=[
-                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
-                {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
-            ],
-            reasoning={"effort": effort},
-            text={"verbosity": "low"},  # Concise responses, avoid chatty prose
+            input=input_data,
             temperature=temperature,
-            response_format={"type": "json"},
+            # reasoning and text stripped by adapter
         )
-        # New SDKs expose output_text; fall back if absent
-        content = getattr(resp, "output_text", None)
-        if not content:
-            # Fallback to choices/message style if present
-            if getattr(resp, "choices", None):
-                content = resp.choices[0].message.content
-        if not content and getattr(resp, "output", None):
-            try:
-                # Attempt to read the first text content
-                content = resp.output[0].content[0].text
-            except Exception:
-                content = None
-        return content.strip() if content else ""
+        return resp.strip() if resp else ""
     except Exception:
         raise
 
@@ -1322,6 +1287,7 @@ def main():
     ap.add_argument("--auto-batch", action="store_true", help="Auto-size batches based on model")
     ap.add_argument("--fresh", action="store_true", help="Backup existing output files with timestamps before creating new ones")
     ap.add_argument("--offline", action="store_true", help="Run in offline mode using mock translations for testing")
+    ap.add_argument("--cache-only", action="store_true", help="Do not call any API and do not mock; require all translations to exist in cache")
     ap.add_argument("--max-retries", type=int, default=2, help="Number of retry attempts before splitting batch (default: 2)")
     ap.add_argument("--on-batch-fail", choices=["split", "abort"], default="split", help="Action on batch failure: split or abort (default: split)")
     ap.add_argument("--json-debug-dir", default=None, help="Directory for JSON failure debug artifacts (default: run-<timestamp>/json_failures)")
@@ -1333,9 +1299,22 @@ def main():
         help="Minimum font scale (percent * 1000) for norm autofit; 90000 = 90%")
     ap.add_argument("--line-spacing-pct", type=int, default=100000,
         help="Paragraph line spacing percentage (100000 = 100%)")
-    ap.add_argument("--tight-margins", action="store_true",
-        help="Reduce text insets (left/right ≈0.5em, top/bottom ≈0.25em) to gain space")
-    args = ap.parse_args()
+ap.add_argument("--layout-preset", default="normal", help="Layout preset from config/layout_defaults.yaml")
+ap.add_argument("--tight-margins", action="store_true",
+    help="Reduce text insets (left/right ≈0.5em, top/bottom ≈0.25em) to gain space")
+ap.add_argument("--adapter", default="gpt-4o", help="Primary adapter: gpt5 or gpt-4o")
+args = ap.parse_args()
+
+if args.layout_preset == "normal":
+    config_path = "config/layout_defaults.yaml"
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            defaults = yaml.safe_load(f)
+        args.autofit_mode = defaults.get("autofit_mode", args.autofit_mode)
+        args.font_scale_min = defaults.get("font_scale_min", args.font_scale_min)
+        args.line_spacing_pct = defaults.get("line_spacing_pct", args.line_spacing_pct)
+        if "tight_margins" in defaults:
+            args.tight_margins = True
     
     # Backup existing files if --fresh flag is used  
     if args.fresh:
@@ -1360,9 +1339,11 @@ def main():
 
     args.concurrency = max(1, args.concurrency)
 
-    # Skip API setup in offline mode
-    if args.offline:
+    # Skip API setup in offline mode or cache-only mode
+    if args.offline or args.cache_only:
         logging.info("Running in OFFLINE MODE - using mock translations")
+        if args.cache_only:
+            logging.info("Cache-only mode: will not translate any missing strings; cache must be complete")
         client = None  # No API client needed
     else:
         api_key = os.getenv("OPENAI_API_KEY")
@@ -1372,9 +1353,9 @@ def main():
         
         base_url = os.getenv("OPENAI_BASE_URL", "").strip()
         if base_url:
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            MAIN_ADAPTER = GPTAdapter(api_key=api_key, base_url=base_url, primary_model=primary_model)
         else:
-            client = OpenAI(api_key=api_key)
+            MAIN_ADAPTER = GPTAdapter(api_key=api_key, primary_model=primary_model)
     
     logging.info(f"Starting translation: {args.inp} -> {args.outp}")
     logging.info(f"Model: {args.model}, Batch size: {args.batch}")
@@ -1391,20 +1372,41 @@ def main():
         with open(args.cache, "r", encoding="utf-8") as f:
             cache = json.load(f)
 
-    with zipfile.ZipFile(args.inp, "r") as zin:
-        paras, slide_files = extract_all_paragraphs(zin, slide_range)
-    
-    logging.info(f"Extracted {len(paras)} paragraphs from {len(slide_files)} slides")
+extractor = PptxExtractor()
+paras = extractor.extract(args.inp, args.slides)
+slide_files = list(set(sf for sf, _, _, _ in paras))
 
-    src_strings = [t for _, _, t in paras if JP_ANY.search(t)]
-    uniq = list(dict.fromkeys(src_strings))
-    # Treat identity-mapped entries as missing to avoid caching failures where source == target
-    missing = [s for s in uniq if s not in cache or cache.get(s) == s]
-    
-    logging.info(f"Found {len(src_strings)} Japanese strings, {len(uniq)} unique")
-    logging.info(f"Cache has {len(cache)} entries, {len(missing)} strings need translation")
+logging.info(f"Extracted {len(paras)} paragraphs from {len(slide_files)} slides")
 
-    batch_size = args.batch
+src_strings = [t for _, _, t, _ in paras if JP_ANY.search(t)]
+uniq = list(dict.fromkeys(src_strings))
+# Treat identity-mapped entries as missing to avoid caching failures where source == target
+missing = [s for s in uniq if s not in cache or cache.get(s) == s]
+
+logging.info(f"Found {len(src_strings)} Japanese strings, {len(uniq)} unique")
+logging.info(f"Cache has {len(cache)} entries, {len(missing)} strings need translation")
+
+# In cache-only mode, require that there are no missing items
+if args.cache_only:
+        if missing:
+            sample = missing[:10]
+            logging.error(
+                "cache-only mode: %d strings missing from cache. Export them with 'python scripts/export_missing_jp.py --in %s --out missing_jp.json --cache %s', translate externally, then merge with 'python scripts/merge_into_cache.py --updates translated.json --cache %s'",
+                len(missing), args.inp, args.cache, args.cache
+            )
+            # Also write a convenience file listing missing items
+            try:
+                miss_path = "missing_jp.cache_only.json"
+                with open(miss_path, "w", encoding="utf-8") as f:
+                    json.dump({s: "" for s in missing}, f, ensure_ascii=False, indent=2)
+                print(f"Wrote template of missing items: {miss_path}")
+            except Exception:
+                pass
+            sys.exit(3)
+        else:
+            logging.info("cache-only mode: cache covers all strings; proceeding without any API/mocks")
+
+batch_size = args.batch
     if args.auto_batch and missing:
         avg_len = sum(len(s) for s in missing) / len(missing)
         batch_size = estimate_batch_size(args.model, avg_len, args.max_array_items)
@@ -1412,19 +1414,22 @@ def main():
 
     # Warm pass
     if args.warm_with and args.warm_with != args.model:
-        uncached = [s for s in missing if s not in cache]
-        if uncached:
-            warm_batch = batch_size
-            if args.auto_batch:
-                avg_len = sum(len(s) for s in uncached) / len(uncached)
-                warm_batch = estimate_batch_size(args.warm_with, avg_len, args.max_array_items)
-            updates = warm_pass(client, args.warm_with, uncached, glossary, warm_batch)
-            cache.update(updates)
-            with open(args.cache, "w", encoding="utf-8") as f:
-                json.dump(cache, f, ensure_ascii=False, indent=2)
+        if args.cache_only:
+            logging.info("cache-only mode: skipping warm pass")
+        else:
+            uncached = [s for s in missing if s not in cache]
+            if uncached:
+                warm_batch = batch_size
+                if args.auto_batch:
+                    avg_len = sum(len(s) for s in uncached) / len(uncached)
+                    warm_batch = estimate_batch_size(args.warm_with, avg_len, args.max_array_items)
+                updates = warm_pass(client, args.warm_with, uncached, glossary, warm_batch)
+                cache.update(updates)
+                with open(args.cache, "w", encoding="utf-8") as f:
+                    json.dump(cache, f, ensure_ascii=False, indent=2)
 
     # Upgrade pass  
-    if args.upgrade_flagged:
+    if args.upgrade_flagged and not args.cache_only:
         flagged = get_flagged_items(cache)
         if flagged:
             updates = upgrade_pass(client, args.model, flagged, glossary, batch_size)
@@ -1436,7 +1441,7 @@ def main():
 
     # Main translation
     calls = 0  # Initialize calls counter
-    if missing:
+    if missing and not args.cache_only:
         if args.concurrency > 1:
             # Async path
             print(f"Async translation: {len(missing)} items, concurrency={args.concurrency}")
@@ -1466,6 +1471,8 @@ def main():
                     cache[s] = t
                 i += batch_size
                 print(f"Progress: {min(i, len(missing))}/{len(missing)}")
+    elif args.cache_only:
+        logging.info("cache-only mode: no translation performed; using cache as-is")
 
     with open(args.cache, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
@@ -1475,7 +1482,7 @@ def main():
     with open(args.bilingual_csv, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(["slide_xml","paragraph_idx","Japanese","English"])
-        for sf, idx, jp in paras:
+        for sf, idx, jp, _ in paras:
             en = cache.get(jp, jp)
             w.writerow([sf, idx, jp, en])
 

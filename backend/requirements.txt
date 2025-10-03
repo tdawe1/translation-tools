@@ -1,0 +1,25 @@
+# Core dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Test dependencies
+pytest==7.4.3
+pytest-cov==4.1.0
+httpx==0.25.2
+
+# Database dependencies
+sqlalchemy>=2.0.30
+pydantic-settings==2.1.0
+
+# Authentication dependencies
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Email validation
+email-validator==2.1.0
+
+# Additional dependencies
+requests==2.31.0
+aiofiles==23.2.0
+python-dotenv==1.0.0

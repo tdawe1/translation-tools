@@ -1,0 +1,47 @@
+{
+  "こんにちは世界": {
+    "translated": "Hello World",
+    "font_scaling": 0.9,
+    "layout_adjustments": {
+      "position_offset": {
+        "x": 0,
+        "y": 0
+      },
+      "line_spacing": 1.0
+    }
+  },
+  "日本語のテキスト": {
+    "translated": "Japanese text",
+    "font_scaling": 1.0
+  },
+  "これはテストです": {
+    "translated": "This is a test",
+    "font_scaling": 0.85,
+    "layout_adjustments": {
+      "position_offset": {
+        "x": 5,
+        "y": 2
+      }
+    }
+  },
+  "PDFドキュメント": {
+    "translated": "PDF document",
+    "font_scaling": 1.0
+  },
+  "翻訳システム": {
+    "translated": "Translation system",
+    "font_scaling": 0.9
+  },
+  "フォントスケーリング": {
+    "translated": "Font scaling",
+    "font_scaling": 0.8
+  },
+  "レイアウト調整": {
+    "translated": "Layout adjustment",
+    "font_scaling": 0.85
+  },
+  "書式設定の保持": {
+    "translated": "Format preservation",
+    "font_scaling": 0.9
+  }
+}
