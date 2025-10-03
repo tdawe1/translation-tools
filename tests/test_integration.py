@@ -302,7 +302,7 @@ class TestTranslationIntegration:
             for i in range(3):
                 with open(sample_docx_content, 'rb') as f:
                     response = client.post(
-                        "/api/translate/translate",
+                        "/api/translate",
                         files={"file": (f"test{i}.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
                     )
                     assert response.status_code == 202
