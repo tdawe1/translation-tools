@@ -22,7 +22,7 @@ def extract_text_blocks(pptx_path: str):
             xml = z.read(name).decode("utf-8", errors="ignore")
             texts = re.findall(rf"<a:t>(.*?)</a:t>", xml, flags=re.S)
             if texts:
-                s = "".join(t.replace("&lt;","<").replace("&gt;">",).replace("&amp;","&") for t in texts)
+                s = "".join(t.replace("&lt;","<").replace("&gt;",">").replace("&amp;","&") for t in texts)
                 s = BR_RX.sub("\n", s)
                 parts = [p.strip() for p in re.split(r"\n{2,}", s) if p.strip()]
                 blocks.extend(parts)
@@ -31,7 +31,7 @@ def extract_text_blocks(pptx_path: str):
             xml = z.read(name).decode("utf-8", errors="ignore")
             texts = re.findall(rf"<a:t>(.*?)</a:t>", xml, flags=re.S)
             if texts:
-                s = "".join(t.replace("&lt;","<").replace("&gt;">",).replace("&amp;","&") for t in texts)
+                s = "".join(t.replace("&lt;","<").replace("&gt;",">").replace("&amp;","&") for t in texts)
                 s = BR_RX.sub("\n", s)
                 parts = [p.strip() for p in re.split(r"\n{2,}", s) if p.strip()]
                 blocks.extend(parts)

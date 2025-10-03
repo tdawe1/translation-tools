@@ -110,15 +110,7 @@ def extract_text_blocks(pptx_path: str):
                 s = BR_RX.sub("\n", "".join(html.unescape(t) for t in texts))
                 parts = [p.strip() for p in re.split(r"\n{2,}", s) if p.strip()]
                 blocks.extend(parts)
-        for name in note_names:
-            xml = z.read(name).decode("utf-8", errors="ignore")
-            texts = re.findall(rf"<a:t>(.*?)</a:t>", xml, flags=re.S)
-            if texts:
-                s = BR_RX.sub("
-",  "".join(t.replace("&lt;","<").replace("&gt;",">").replace("&amp;","&") for t in texts))
-                parts = [p.strip() for p in re.split(r"
-{2,}", s) if p.strip()]
-                blocks.extend(parts)
+        
     return [b for b in blocks if b.strip()]
 def count_tokens_for_blocks(blocks, model_key: str):
     enc = encoding_for_model_key(model_key)

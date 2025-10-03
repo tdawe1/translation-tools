@@ -1,2 +1,89 @@
+feature/webhook-progress-tracking
 run-*/
 .env
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Environments
+.env
+.last_translate
+.claude/
+.vscode/
+.idea/
+.venv/
+venv/
+
+# Logs & reports
+*.log
+audit*.json
+bilingual*.csv
+residual_rows_translated_only.csv
+
+# Artifacts
+outputs/*.pptx
+run-artifacts/
+archived_runs/
+audits/
+backup/
+comparisons/
+data/
+inputs/
+!inputs/.gitkeep
+
+# Project-specific content
+glossary.json
+translation_cache*.json
+prompt*.md
+!prompt.example.md
+
+# Allow example templates
+!.env.example
+!glossary.example.json
+
+# OS noise
+.DS_Store
+
+# ensured by purge_history
+archived_runs/**
+inputs/**
+outputs/**
+audits/**
+backup/**
+comparisons/**
+data/**
+glossary.json
+translation_cache*.json
+*.csv
+*.log
+prompt*.md
+
+# ensured by purge_history
+archived_runs/**
+inputs/**
+outputs/**
+audits/**
+backup/**
+comparisons/**
+data/**
+glossary.json
+translation_cache*.json
+*.csv
+*.log
+prompt*.md
+
+# ensured by purge_history
+archived_runs/**
+inputs/**
+outputs/**
+audits/**
+backup/**
+comparisons/**
+data/**
+glossary.json
+translation_cache*.json
+*.csv
+*.log
+prompt*.md
+main

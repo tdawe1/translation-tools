@@ -10,14 +10,53 @@ JA -> EN PowerPoint translator that replaces text in the original file while pre
 
 Usage:
   python translate_pptx_inplace.py --in input.pptx --out output_en.pptx \
-    --model gpt-4o --batch 40 --glossary glossary.json
+    --model gpt-4o-2024-08-06
+
+Production Presets:
+  Conservative (rock-solid):  --model gpt-4o-2024-08-06 (auto batch 8-12, max retries)
+  Balanced (recommended):     --model gpt-4o-2024-08-06 (auto batch 10-14) 
+  Cost-lean (good quality):   --model gpt-4o-mini (auto batch 12-16)
+
+Batch sizes auto-calculated based on model and token estimates.
+Override with --batch N (8-24 recommended range).
 
 Env:
   OPENAI_API_KEY must be set.
 """
-import argparse, json, os, re, shutil, sys, time, zipfile
+import asyncio
+import argparse, json, os, re, shutil, sys, time, zipfile, logging
 from xml.etree import ElementTree as ET
 from pathlib import Path
+from datetime import datetime
+
+def get_timestamped_filename(filepath):
+    """Create a timestamped backup filename if the file exists."""
+    if os.path.exists(filepath):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path_obj = Path(filepath)
+        backup_name = f"{path_obj.stem}_{timestamp}{path_obj.suffix}"
+        return backup_name
+    return filepath
+
+def backup_existing_files(cache_file, bilingual_csv, audit_json, log_file):
+    """Backup existing output files with timestamps."""
+    files_backed_up = []
+    
+    for filepath in [cache_file, bilingual_csv, audit_json, log_file]:
+        if os.path.exists(filepath):
+            backup_name = get_timestamped_filename(filepath)
+            shutil.move(filepath, backup_name)
+            files_backed_up.append(f"{filepath} -> {backup_name}")
+    
+    if files_backed_up:
+        print("Backed up existing files:")
+        for backup in files_backed_up:
+            print(f"  {backup}")
+        print()
+    
+    return files_backed_up
+
+# Logging will be set up in main() after parsing args
 
 # Import style consistency modules
 try:
@@ -32,7 +71,7 @@ except ImportError:
 
 # ---- OpenAI client (official library) ----
 try:
-    from openai import OpenAI
+    from openai import OpenAI, AsyncOpenAI
 except Exception:
     print("ERROR: The 'openai' package is required. Install via: pip install openai", file=sys.stderr)
     raise
@@ -126,7 +165,9 @@ def set_para_text(p_el, new_text: str):
         if child.tag == br_tag:
             p_el.remove(child)
     for r in runs:
-        t = r.find(t_tag) or ET.SubElement(r, t_tag)
+        t = r.find(t_tag)
+        if t is None:
+            t = ET.SubElement(r, t_tag)
         t.text = ""
 
     # Tokenize: keep whitespace; use None sentinel for newline
@@ -231,11 +272,59 @@ def _ensure_autofit(root):
         if bodyPr.find(A_NS + "normAutofit") is None and bodyPr.find(A_NS + "spAutoFit") is None:
             ET.SubElement(bodyPr, A_NS + "normAutofit")
 
+def _ensure_autofit_on_tree(root, mode: str, font_scale_min: int, line_spacing_pct: int, tight_margins: bool):
+    """Enable slide-wide text autofit & spacing. Safe, mechanical; does not change wording."""
+    bodyPr_tag = A_NS + "bodyPr"
+    norm_tag   = A_NS + "normAutofit"
+    shape_tag  = A_NS + "spAutoFit"
+    no_tag     = A_NS + "noAutofit"
+    p_tag      = A_NS + "p"
+    pPr_tag    = A_NS + "pPr"
+    lnSpc_tag  = A_NS + "lnSpc"
+    spcPct_tag = A_NS + "spcPct"
+
+    # 1) Per text frame: set autofit and tighten insets if requested
+    for bp in list(root.iter(bodyPr_tag)):
+        # remove conflicting children
+        for ch in list(bp):
+            if ch.tag in (norm_tag, shape_tag, no_tag):
+                bp.remove(ch)
+        if mode == "none":
+            bp.append(ET.Element(no_tag))
+        elif mode == "shape":
+            bp.append(ET.Element(shape_tag))
+        else:
+            na = ET.Element(norm_tag)
+            # allow PowerPoint to shrink fonts and line spacing to fit
+            na.set("fontScale", str(font_scale_min))           # e.g., 90000 = 90%
+            na.set("lnSpcReduction", "12000")                  # ~12% line-space reduction headroom
+            bp.append(na)
+        if tight_margins:
+            # Insets: values are EMUs; these are conservative, non-zero margins
+            bp.set("lIns", "45720")   # ~0.05"
+            bp.set("rIns", "45720")
+            bp.set("tIns", "22860")   # ~0.025"
+            bp.set("bIns", "22860")
+
+    # 2) Normalize line spacing to a fixed percentage (e.g., 100%)
+    for p in list(root.iter(p_tag)):
+        pPr = p.find(pPr_tag)
+        if pPr is None:
+            pPr = ET.SubElement(p, pPr_tag)
+        ln = pPr.find(lnSpc_tag)
+        if ln is None:
+            ln = ET.SubElement(pPr, lnSpc_tag)
+        sp = ln.find(spcPct_tag)
+        if sp is None:
+            sp = ET.SubElement(ln, spcPct_tag)
+        sp.set("val", str(line_spacing_pct))
+
 def _use_responses_api(model: str) -> bool:
     m = (model or "").lower()
     # Prefer Responses API for latest models like gpt-5 family
     return m.startswith("gpt-5") or os.getenv("OPENAI_USE_RESPONSES") == "1"
 
+ feature/webhook-progress-tracking
 def _responses_create_compat(client, *, model, sys_prompt, user_payload, temperature=0.6):
     import json, logging
     kwargs = {
@@ -255,18 +344,142 @@ def _responses_create_compat(client, *, model, sys_prompt, user_payload, tempera
         if "response_format" in str(e) or "unexpected keyword" in str(e):
             logging.warning("Responses API: retrying without response_format (already omitted).")
             return client.responses.create(**kwargs)
+=======
+def make_array_schema(expected_len: int | None):
+    """Build a strict JSON Schema for string arrays."""
+    return {
+        "name": "BatchArrayOfStrings",
+        "schema": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1
+        },
+        "strict": True
+    }
+
+def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
+    # OpenAI Responses API with GPT-5 reasoning model
+    try:
+        # Configure reasoning effort based on model - high for main translation, minimal for reviews
+        if model.startswith("gpt-5-mini"):
+            effort = "minimal"  # Fast reviewer
+        else:
+            effort = os.getenv("OPENAI_REASONING_EFFORT", "high")  # Deep thinking for translation
+        
+        resp = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
+                {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
+            ],
+            reasoning={"effort": effort},
+            text={"verbosity": "low"},  # Concise responses, avoid chatty prose
+            temperature=temperature,
+            response_format={"type": "json"},
+        )
+        # New SDKs expose output_text; fall back if absent
+        content = getattr(resp, "output_text", None)
+        if not content:
+            # Fallback to choices/message style if present
+            if getattr(resp, "choices", None):
+                content = resp.choices[0].message.content
+        if not content and getattr(resp, "output", None):
+            try:
+                # Attempt to read the first text content
+                content = resp.output[0].content[0].text
+            except Exception:
+                content = None
+        return content.strip() if content else ""
+    except Exception:
+ main
         raise
 
 def _chat_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-        ],
-        temperature=temperature,
-    )
+    """Sync version with response_format fallback."""
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        # Fallback: schema in prompt
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt + "\nReturn ONLY a JSON array."},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=temperature,
+        )
     return resp.choices[0].message.content.strip()
+
+async def _chat_create_async(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
+    """Async version with response_format fallback."""
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        # Fallback: schema in prompt
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt + "\nReturn ONLY a JSON array."},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=temperature,
+        )
+    return resp.choices[0].message.content.strip()
+
+async def _responses_create_compat_async(aclient, *, model, input, temperature, json_schema, max_output_tokens):
+    """Async Responses API wrapper with JSON schema fallback."""
+    try:
+        resp = await aclient.responses.create(
+            model=model,
+            input=input,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            response_format={"type": "json_schema", "json_schema": json_schema, "strict": True},
+        )
+    except TypeError as e:
+        if "response_format" in str(e):
+            # Fallback: inline schema in prompt
+            schema_text = f"Return ONLY a valid JSON value matching this JSON Schema:\n{json.dumps(json_schema, indent=2)}"
+            fallback_input = input.copy()
+            if fallback_input and len(fallback_input) > 0:
+                fallback_input[0]["content"] = schema_text + "\n\n" + fallback_input[0]["content"]
+            
+            resp = await aclient.responses.create(
+                model=model,
+                input=fallback_input,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
+        else:
+            raise
+    
+    # Extract content from response
+    content = getattr(resp, "output_text", None)
+    if not content and getattr(resp, "output", None):
+        try:
+            content = resp.output[0].content[0].text
+        except Exception:
+            content = None
+    if not content and getattr(resp, "choices", None):
+        content = resp.choices[0].message.content
+    
+    return content.strip() if content else ""
 
 def _extract_json_array(s: str, expected_len: int):
     import json, re
@@ -677,7 +890,7 @@ def detect_content_type(para_element) -> str:
     
     return "bullet"  # Default assumption
 
-def apply_style_consistency_workflow(client, translations, original_items, glossary, deck_tone):
+def apply_style_consistency_workflow(client, translations, original_items, glossary, deck_tone, offline_mode=False):
     """
     Apply comprehensive style consistency workflow:
     1. Style normalization (deterministic)
@@ -708,9 +921,9 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
             normalized = bullet_fragment(normalize_punct(translation))
         normalized_translations.append(normalized)
     
-    # Stage 2: Model-based style checking (if enabled)
+    # Stage 2: Model-based style checking (if enabled and not in offline mode)
     enable_style_checking = os.getenv("ENABLE_STYLE_CHECKING", "1") == "1"
-    if enable_style_checking and _use_responses_api(os.getenv("OPENAI_MODEL", "gpt-5")):
+    if not offline_mode and enable_style_checking and _use_responses_api(os.getenv("OPENAI_MODEL", "gpt-5")):
         try:
             # Run style diagnostics
             diagnostics = model_style_check(client, normalized_translations, glossary, deck_tone)
@@ -721,20 +934,46 @@ def apply_style_consistency_workflow(client, translations, original_items, gloss
             return fixed_translations
             
         except Exception as e:
+            import traceback
             print(f"Style checking failed, using normalized translations: {e}")
+            print(f"Full traceback: {traceback.format_exc()}")
             return normalized_translations
-    else:
-        # Fallback to local-only style checking for consistency
+    elif not offline_mode:
+        # Fallback to local-only style checking for consistency (skip in offline mode)
         local_diagnostics = run_style_check(client, normalized_translations, glossary, deck_tone)
         fixed_translations = apply_style_fixes(normalized_translations, local_diagnostics)
         return fixed_translations
+    else:
+        # In offline mode, just return the normalized translations
+        logging.info("Offline mode: skipping style checking")
+        return normalized_translations
 
-def batch_translate(client, model: str, items, glossary):
+def mock_translate(items):
+    """Generate mock translations for offline testing."""
+    mock_translations = []
+    for i, item in enumerate(items):
+        if not item or not item.strip():
+            mock_translations.append("")
+            continue
+        
+        # Generate predictable mock translation
+        mock = f"Mock EN {i+1}: {item[:20]}..." if len(item) > 20 else f"Mock EN {i+1}: {item}"
+        mock_translations.append(mock)
+    
+    return mock_translations
+
+def batch_translate(client, model: str, items, glossary, offline_mode=False):
     """Translate list of strings JA->EN. Returns list of translations in order.
     Uses GPT-5 reasoning model with deep thinking for best fidelity.
     Falls back to Chat Completions for non-GPT-5 models.
     Expects a strict JSON array output.
     """
+    if offline_mode:
+        logging.info(f"Running in offline mode - using mock translations for {len(items)} items")
+        return mock_translate(items)
+    
+    global _slide_notes_content
+    logging.debug(f"Starting batch translation of {len(items)} items with model {model}")
     # Apply masking to protect fragile content
     items_masked, maps = zip(*[mask_fragile(x) for x in items]) if items else ([], [])
     
@@ -859,7 +1098,7 @@ def batch_translate(client, model: str, items, glossary):
                         deck_tone = json.load(f)
 
                 # Apply style consistency workflow
-                final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, deck_tone)
+                final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, deck_tone, offline_mode)
                         
                 return final_out
             else:
@@ -871,7 +1110,7 @@ def batch_translate(client, model: str, items, glossary):
                         deck_tone = json.load(f)
 
                 # Apply style consistency to simple path too
-                final_out = apply_style_consistency_workflow(client, out, items, glossary, deck_tone)
+                final_out = apply_style_consistency_workflow(client, out, items, glossary, deck_tone, offline_mode)
                 return final_out
             
         # Fallback to simple JSON parsing
@@ -923,12 +1162,12 @@ def batch_translate(client, model: str, items, glossary):
                             _slide_notes_content[original] = notes
                     
                     # Apply style consistency workflow
-                    final_out = apply_style_consistency_workflow(client, processed_out, items, glossary)
+                    final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, None, offline_mode)
                     
                     return final_out
                 else:
                     # Apply style consistency to fallback path
-                    final_out = apply_style_consistency_workflow(client, out, items, glossary)
+                    final_out = apply_style_consistency_workflow(client, out, items, glossary, None, offline_mode)
                     return final_out
         except Exception:
             # Not valid JSON array; retry
@@ -936,6 +1175,182 @@ def batch_translate(client, model: str, items, glossary):
             continue
 
     raise RuntimeError("Model did not return valid JSON array; aborting.")
+
+async def translate_batch(items, attempt=1, args=None, client=None, model=None, glossary=None, idx=None, json_debug_dir=None):
+    """Translate a single batch with retry and split logic."""
+    items_masked, maps = zip(*[mask_fragile(x) for x in items]) if items else ([], [])
+    
+    style_guide = build_style_guide_text(
+        os.getenv("STYLE_PRESET", "gengo"), os.getenv("STYLE_GUIDE_FILE")
+    )
+    sys_prompt = make_producer_prompt(items, style_guide, glossary)
+    user_payload = {
+        "glossary": glossary or {},
+        "strings": list(items_masked),
+        "instructions": ["Return ONLY a JSON array of translated strings in the same order.", "No code fences, no commentary."],
+    }
+    
+    temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.6"))
+    max_output_tokens = args.max_output_tokens or min(4096, 80 * len(items))
+    
+    # Build JSON schema
+    json_schema = make_array_schema(len(items))
+    
+    # Prepare input for responses API
+    input_messages = [
+        {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
+        {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
+    ]
+    
+    try:
+        # Try responses API first
+        if _use_responses_api(model):
+            content = await _responses_create_compat_async(
+                client, model=model, input=input_messages, 
+                temperature=temperature, json_schema=json_schema, 
+                max_output_tokens=max_output_tokens
+            )
+        else:
+            # Fallback to chat completions
+            content = await _chat_create_async(client, model, sys_prompt, user_payload, temperature)
+        
+        # Extract JSON array
+        data = _extract_json_array(content, len(items))
+        if data:
+            out = [unmask_fragile(str(y), maps[i]) for i, y in enumerate(data)]
+            logging.info(f"[Batch {idx}] Completed {len(out)} items")
+            return {"idx": idx, "items": items, "translations": out}
+        
+        # If we get here, JSON parsing failed
+        raise ValueError("Failed to extract valid JSON array")
+        
+    except Exception as e:
+        # Write debug artifacts
+        if json_debug_dir:
+            os.makedirs(json_debug_dir, exist_ok=True)
+            debug_file = os.path.join(json_debug_dir, f"batch_{idx}_attempt_{attempt}_raw.txt")
+            schema_file = os.path.join(json_debug_dir, f"batch_{idx}_attempt_{attempt}_schema.json")
+            prompt_file = os.path.join(json_debug_dir, f"batch_{idx}_attempt_{attempt}_prompt.txt")
+            
+            with open(debug_file, "w", encoding="utf-8") as f:
+                f.write(content if 'content' in locals() else str(e))
+            with open(schema_file, "w", encoding="utf-8") as f:
+                json.dump(json_schema, f, indent=2)
+            with open(prompt_file, "w", encoding="utf-8") as f:
+                f.write(sys_prompt)
+        
+        # Retry logic
+        if attempt <= args.max_retries:
+            logging.warning(f"[Batch {idx}] Attempt {attempt} failed, retrying: {e}")
+            await asyncio.sleep(0.5 * attempt)  # Brief backoff
+            return await translate_batch(items, attempt + 1, args, client, model, glossary, idx, json_debug_dir)
+        
+        # Split logic
+        elif args.on_batch_fail == "split" and len(items) > 1:
+            logging.info(f"[Batch {idx}] Splitting batch of {len(items)} items after {args.max_retries} failed attempts")
+            mid = len(items) // 2
+            left_items = items[:mid]
+            right_items = items[mid:]
+            
+            # Process both halves
+            left_result = await translate_batch(left_items, 1, args, client, model, glossary, f"{idx}_L", json_debug_dir)
+            right_result = await translate_batch(right_items, 1, args, client, model, glossary, f"{idx}_R", json_debug_dir)
+            
+            # Combine results
+            combined_items = left_result["items"] + right_result["items"]
+            combined_translations = left_result["translations"] + right_result["translations"]
+            
+            return {"idx": idx, "items": combined_items, "translations": combined_translations}
+        
+        else:
+            raise ValueError(f"Failed to get valid JSON for batch {idx} after {args.max_retries} attempts")
+
+async def run_async_translation(client, model, missing, glossary, batch_size, concurrency, args):
+    """Run concurrent batch translations with robust error handling."""
+    # Set up debug directory
+    if args.json_debug_dir is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        json_debug_dir = f"run-{timestamp}/json_failures"
+    else:
+        json_debug_dir = args.json_debug_dir
+    
+    os.makedirs(json_debug_dir, exist_ok=True)
+    
+    sem = asyncio.Semaphore(concurrency)
+    
+    async def limited_batch(items, idx):
+        async with sem:
+            return await translate_batch(items, 1, args, client, model, glossary, idx, json_debug_dir)
+    
+    tasks = []
+    for i in range(0, len(missing), batch_size):
+        batch = missing[i:i+batch_size]
+        task = limited_batch(batch, i // batch_size)
+        tasks.append(task)
+    
+    results = await asyncio.gather(*tasks)
+    
+    # Reassemble in order
+    cache_updates = {}
+    for result in sorted(results, key=lambda x: x["idx"]):
+        for item, trans in zip(result["items"], result["translations"]):
+            cache_updates[item] = trans
+    
+    return cache_updates
+
+def estimate_batch_size(model: str, avg_len: float, max_array_items: int = 20) -> int:
+    """Auto-size batch based on model and item length."""
+    if "mini" in model.lower():
+        target_tokens, fallback = 8000, 14
+    else:
+        target_tokens, fallback = 10000, 12
+    
+    if avg_len > 0:
+        tokens_per_item = avg_len * 2.5 + 50
+        batch = int(target_tokens / tokens_per_item)
+    else:
+        batch = fallback
+    
+    return max(8, min(max_array_items, batch))
+
+def warm_pass(client, warm_model, missing, glossary, batch_size):
+    """Prefill cache with cheaper model."""
+    print(f"Warm pass with {warm_model}: {len(missing)} items")
+    cache_updates = {}
+    
+    i = 0
+    while i < len(missing):
+        batch = missing[i:i+batch_size]
+        out = batch_translate(client, warm_model, batch, glossary)
+        for s, t in zip(batch, out):
+            cache_updates[s] = t
+        i += batch_size
+        print(f"Warm: {i}/{len(missing)}")
+    
+    return cache_updates
+
+def get_flagged_items(cache, reviewer_results=None):
+    """Get items flagged by reviewer for upgrade."""
+    # Simplified: would parse reviewer JSON for real flagged items
+    # For now, return empty set
+    return set()
+
+def upgrade_pass(client, model, flagged, glossary, batch_size):
+    """Retranslate only flagged items."""
+    if not flagged:
+        return {}
+    
+    print(f"Upgrade pass: {len(flagged)} flagged items")
+    flagged_list = list(flagged)
+    cache_updates = {}
+    
+    for i in range(0, len(flagged_list), batch_size):
+        batch = flagged_list[i:i+batch_size]
+        out = batch_translate(client, model, batch, glossary)
+        for s, t in zip(batch, out):
+            cache_updates[s] = t
+    
+    return cache_updates
 
 def main():
     ap = argparse.ArgumentParser()
@@ -950,7 +1365,40 @@ def main():
     ap.add_argument("--slides", default=None, help="Slide range, e.g., '1-6'")
     ap.add_argument("--style-preset", default="gengo", choices=["gengo","minimal"], help="Style preset to load into prompts (default: gengo)")
     ap.add_argument("--style-file", default=None, help="Path to custom style guide file")
+    ap.add_argument("--concurrency", type=int, default=1, help="Number of concurrent API requests")
+    ap.add_argument("--warm-with", default=None, help="Model for warm pass (e.g., gpt-4o-mini)")
+    ap.add_argument("--upgrade-flagged", action="store_true", help="Retranslate only reviewer-flagged items")
+    ap.add_argument("--auto-batch", action="store_true", help="Auto-size batches based on model")
+    ap.add_argument("--fresh", action="store_true", help="Backup existing output files with timestamps before creating new ones")
+    ap.add_argument("--offline", action="store_true", help="Run in offline mode using mock translations for testing")
+    ap.add_argument("--max-retries", type=int, default=2, help="Number of retry attempts before splitting batch (default: 2)")
+    ap.add_argument("--on-batch-fail", choices=["split", "abort"], default="split", help="Action on batch failure: split or abort (default: split)")
+    ap.add_argument("--json-debug-dir", default=None, help="Directory for JSON failure debug artifacts (default: run-<timestamp>/json_failures)")
+    ap.add_argument("--max-array-items", type=int, default=20, help="Maximum array items for auto-batch (default: 20)")
+    ap.add_argument("--max-output-tokens", type=int, default=None, help="Maximum output tokens (default: auto-calculated)")
+    ap.add_argument("--autofit-mode", choices=["norm","shape","none"], default="norm",
+        help="norm = shrink text to fit shape; shape = expand shape to fit text; none = disable autofit")
+    ap.add_argument("--font-scale-min", type=int, default=90000,
+        help="Minimum font scale (percent * 1000) for norm autofit; 90000 = 90%")
+    ap.add_argument("--line-spacing-pct", type=int, default=100000,
+        help="Paragraph line spacing percentage (100000 = 100%)")
+    ap.add_argument("--tight-margins", action="store_true",
+        help="Reduce text insets (left/right ≈0.5em, top/bottom ≈0.25em) to gain space")
     args = ap.parse_args()
+    
+    # Backup existing files if --fresh flag is used  
+    if args.fresh:
+        backup_existing_files(args.cache, args.bilingual_csv, args.audit_json, "translation.log")
+    
+    # Set up logging after potential backup
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('translation.log'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
 
     slide_range = set()
     if args.slides:
@@ -959,16 +1407,28 @@ def main():
             start, end = int(parts[0]), int(parts[1])
             slide_range = set(range(start, end + 1))
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("ERROR: Set OPENAI_API_KEY in environment.", file=sys.stderr)
-        sys.exit(2)
+    args.concurrency = max(1, args.concurrency)
 
-    base_url = os.getenv("OPENAI_BASE_URL", "").strip()
-    if base_url:
-        client = OpenAI(api_key=api_key, base_url=base_url)
+    # Skip API setup in offline mode
+    if args.offline:
+        logging.info("Running in OFFLINE MODE - using mock translations")
+        client = None  # No API client needed
     else:
-        client = OpenAI(api_key=api_key)
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logging.error("OPENAI_API_KEY not set in environment")
+            sys.exit(2)
+        
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+        if base_url:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+        else:
+            client = OpenAI(api_key=api_key)
+    
+    logging.info(f"Starting translation: {args.inp} -> {args.outp}")
+    logging.info(f"Model: {args.model}, Batch size: {args.batch}")
+    if args.offline:
+        logging.info("Offline mode: generating mock translations for testing")
 
     glossary = {}
     if args.glossary and os.path.exists(args.glossary):
@@ -982,6 +1442,8 @@ def main():
 
     with zipfile.ZipFile(args.inp, "r") as zin:
         paras, slide_files = extract_all_paragraphs(zin, slide_range)
+    
+    logging.info(f"Extracted {len(paras)} paragraphs from {len(slide_files)} slides")
 
     # Index contexts for webhook correlation
     for sf, idx, jp in paras:
@@ -992,6 +1454,7 @@ def main():
     uniq = list(dict.fromkeys(src_strings))
     # Treat identity-mapped entries as missing to avoid caching failures where source == target
     missing = [s for s in uniq if s not in cache or cache.get(s) == s]
+ feature/webhook-progress-tracking
 
     i = 0
     calls = 0
@@ -1013,6 +1476,74 @@ def main():
         for s, t in zip(batch, out):
             cache[s] = t
         i += args.batch
+=======
+    
+    logging.info(f"Found {len(src_strings)} Japanese strings, {len(uniq)} unique")
+    logging.info(f"Cache has {len(cache)} entries, {len(missing)} strings need translation")
+
+    batch_size = args.batch
+    if args.auto_batch and missing:
+        avg_len = sum(len(s) for s in missing) / len(missing)
+        batch_size = estimate_batch_size(args.model, avg_len, args.max_array_items)
+        print(f"Auto-batch: size={batch_size} (avg_len={avg_len:.1f})")
+
+    # Warm pass
+    if args.warm_with and args.warm_with != args.model:
+        uncached = [s for s in missing if s not in cache]
+        if uncached:
+            warm_batch = batch_size
+            if args.auto_batch:
+                avg_len = sum(len(s) for s in uncached) / len(uncached)
+                warm_batch = estimate_batch_size(args.warm_with, avg_len, args.max_array_items)
+            updates = warm_pass(client, args.warm_with, uncached, glossary, warm_batch)
+            cache.update(updates)
+            with open(args.cache, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+
+    # Upgrade pass  
+    if args.upgrade_flagged:
+        flagged = get_flagged_items(cache)
+        if flagged:
+            updates = upgrade_pass(client, args.model, flagged, glossary, batch_size)
+            cache.update(updates)
+            with open(args.cache, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+        # Refresh missing list
+        missing = [s for s in uniq if s not in cache or cache.get(s) == s]
+
+    # Main translation
+    calls = 0  # Initialize calls counter
+    if missing:
+        if args.concurrency > 1:
+            # Async path
+            print(f"Async translation: {len(missing)} items, concurrency={args.concurrency}")
+            if base_url:
+                async_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            else:
+                async_client = AsyncOpenAI(api_key=api_key)
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                updates = loop.run_until_complete(
+                    run_async_translation(async_client, args.model, missing, glossary, batch_size, args.concurrency, args)
+                )
+                cache.update(updates)
+                calls = (len(missing) + batch_size - 1) // batch_size  # Estimate calls for async
+            finally:
+                loop.close()
+        else:
+            # Sync path (existing)
+            i = 0
+            while i < len(missing):
+                batch = missing[i:i+batch_size]
+                out = batch_translate(client, args.model, batch, glossary, args.offline)
+                calls += 1
+                for s, t in zip(batch, out):
+                    cache[s] = t
+                i += batch_size
+                print(f"Progress: {min(i, len(missing))}/{len(missing)}")
+ main
 
     with open(args.cache, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
@@ -1065,6 +1596,15 @@ def main():
                         apply_deck_formatting_profile(root)
                     
                     _ensure_autofit(root)
+                    
+                    # After text replacement, make layout robust against EN overflow
+                    _ensure_autofit_on_tree(
+                        root,
+                        args.autofit_mode,
+                        args.font_scale_min,
+                        args.line_spacing_pct,
+                        args.tight_margins,
+                    )
                     data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
                     
                     # Process notes content for this slide

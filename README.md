@@ -1,73 +1,435 @@
-# PPTX Translation Pipeline (JA→EN)
+# 🚀 PowerPoint Translation Pipeline (JA→EN)
 
-This repository contains a GitHub Action to automatically translate Japanese PowerPoint files (.pptx) into English. It preserves the original layout, generates several useful artifacts for quality assurance, and uploads the results to a specified Google Drive folder.
+A production-ready translation system for converting Japanese PowerPoint presentations to English while preserving layout, formatting, and visual elements.
 
-## How to Use
+<details>
+<summary><strong>📊 Project Status Summary (Today)</strong></summary>
 
-This workflow is triggered manually via the `workflow_dispatch` event. You can run it from the Actions tab of the GitHub repository.
+## What we fixed/changed
 
-### Inputs
+* **Stopped word-splitting & newline bugs:** Replaced `set_para_text` with a word-aware version that inserts `<a:br/>` correctly and never cuts words mid-run.
+* **Hardened JSON handling:** Replaced fragile bracket-counting with `JSONDecoder.raw_decode`, multi-strategy extraction, batch splitting on failure, and clampable auto-batch (`--max-array-items`) so chatty outputs don't kill runs.
+* **Killed identity/non-translated cache entries:** Added `scrub_cache.py` and improved JP-count audit to ignore punctuation (e.g., `・`), reducing false positives.
+* **Concurrency & batching tuned:** Demonstrated stable settings (`--concurrency 4–8`, small auto-batches) and removed accidental full re-runs (`--fresh`).
+* **Style: mechanics only (not voice):**
 
-The action can be triggered with one of two input sources:
+  * Added `style_mechanics_normalize.py` and a stronger `style_autofix_from_report.py` to fix ASCII/full-width, dashes, %/¥ spacing, units, stray punctuation, ellipses, bullet punctuation—without altering tone.
+  * Added a summarizer to see which rules the checker complains about most.
+* **Scope-correct residuals:** New `audit_translated_only.py` counts JP **only** in translated EN text; ignores SmartArt/charts/images by design.
+* **Overflow solved at the XML layer:** Introduced slide-safe layout knobs:
 
-1.  **From Google Drive (recommended for large files):**
-    *   `drive_input_folder_id`: The ID of the Google Drive folder containing the `.pptx` file you want to translate. The action will automatically pick the most recently modified `.pptx` file in that folder.
-    *   `file_name_regex`: (Optional) A regular expression to filter the files in the Drive folder. Defaults to `.*\.pptx$`, which matches any file ending in `.pptx`.
+  * `<a:normAutofit>` (shrink to fit),
+  * tighter `<a:bodyPr>` insets (optional),
+  * normalized `<a:lnSpc>` (line spacing).
+  * Exposed flags: `--autofit-mode {norm,shape,none}`, `--font-scale-min`, `--line-spacing-pct`, `--tight-margins`.
+* **ET warning future-proofed:** Replaced `r.find(...) or ET.SubElement(...)` with explicit `if t is None: …`.
 
-2.  **From the Repository:**
-    *   `repo_file_path`: The path to a `.pptx` file located within this repository (e.g., `decks/source/my_deck.pptx`).
+## Translation quality improvements
 
-Leave the unused input source blank.
+* **Cache refinement pass:** Normalized punctuation (NFKC), ranges (`–`), yen/percent formatting, time ranges, pluralization, and consistent webinar terminology (attendee, registrant, operations, etc.). Curated overrides for key headlines and Majisemi terms.
+* **Title consistency:** Restored **Title Case** on headings only (acronym-aware, hyphen-aware), leaving bullets/body untouched.
 
-### Outputs
+## What we ran / artifacts produced
 
-Upon successful completion, the workflow produces the following outputs:
+* **Runs:** Full online translations (4o/4o-mini) with batch split & retries → cache filled; offline apply to preserve layout.
+* **Artifacts:**
 
-1.  **GitHub Artifacts:** A `.zip` file named `translated-pptx-and-artifacts` containing:
-    *   `output_en.pptx`: The translated English version of the presentation.
-    *   `bilingual.csv`: A CSV file mapping each Japanese string to its English translation for easy review.
-    *   `translation_cache.json`: A cache of all translations. This file is used to avoid re-translating the same text, saving time and cost.
-    *   `audit.json`: A JSON report containing statistics like the number of Japanese characters before and after translation.
-    *   A copy of the `glossary.json` and the Python scripts used in the run.
+  * `translation_cache.refined.json` — mechanics/terminology upgrades.
+  * `translation_cache.retitled.json` — refined + Title Case for headings.
+  * `cache_diff.csv` — JP | old EN | new EN.
+  * Updated PPTX outputs (e.g., `outputs/styled_offline.pptx`).
 
-2.  **Google Drive:** All the generated artifacts are also uploaded to a folder named `translation` in the root of your Google Drive.
+## Current state
 
-## Operational Notes
+* **Formatting:** Fixed via autofit + margins + line spacing; only a **short manual pass** needed where English still pushes boundaries.
+* **Style checker:** Mechanical issues substantially reduced; remaining flags are mostly preference/tone or out-of-scope artifacts if the old audit is used.
+* **Cache:** Ready to use.
 
-### Glossary Updates
+### Apply the cache offline
 
-To improve translation consistency for specific terms, you can add entries to the `glossary.json` file. 
+```bash
+cp translation_cache.retitled.json translation_cache.json
+python3 scripts/translate_pptx_inplace.py --offline \
+  --in inputs/68b42f175c652_f711fcda865b11f0b6cecace4a312dcf.pptx \
+  --out outputs/final_retitled.pptx
+```
 
-*   **To add or change a term:** Edit `glossary.json`, commit the change to the repository, and re-run the workflow. 
-*   **Cached Translations:** The system uses the `translation_cache.json` to avoid re-translating text. If you update a glossary term, only new or changed strings will be re-translated. To force a full re-translation, you would need to manually delete the `translation_cache.json` file before running the action (though this is not typically necessary).
+## Optional next steps (small but high-ROI)
 
-### Known Limitations
+* **Bake title-case at write-time:** Only for Title/CenteredTitle placeholders.
+* **Use translated-only audit in CI:** Drop legacy residual counters that include non-text artifacts.
+* **Set sensible defaults:** `--autofit-mode norm --font-scale-min 90000 --line-spacing-pct 100000 --tight-margins`.
+* **Clamp batching:** Respect `--max-array-items` min=6 to reduce JSON hiccups on short blurbs.
 
-*   **Embedded Text:** Text embedded within images, charts, or other non-text objects cannot be translated by this script.
-*   **Text Overflow:** English text is often longer than the original Japanese. While the script preserves the layout, some text boxes may overflow. You can manually fix this in the output `.pptx` file by enabling the "Shrink text on overflow" option or by adjusting font sizes.
+</details>
 
-## QA and Acceptance Checklist
+<details>
+<summary><strong>🎯 Next Steps & Roadmap (Zero-Touch, GPT-5, More Formats)</strong></summary>
 
-- [ ] **Action Completes:** The GitHub Action workflow finishes without any errors.
-- [ ] **Artifacts Present:** The `translated-pptx-and-artifacts` zip file is available for download and contains all the expected files.
-- [ ] **Drive Upload:** The output files are present in the `translation` folder in Google Drive.
-- [ ] **Audit Report:** `audit.json` shows `jp_chars_after` is close to zero. Any remaining characters are likely from untranslatable embedded text.
-- [ ] **Spot-Check:** Review headings and bullet points in `output_en.pptx` for correct tone and accuracy.
-- [ ] **Glossary Applied:** Verify that the terms from `glossary.json` have been consistently applied in the translated presentation.
+Here's a tight, no-nonsense plan to make this zero-touch, faster, and broader.
 
-## Common Pitfalls and Fixes
+## A) Zero-touch "Drive-in / Drive-out" pipeline
 
-*   **Drive Upload Fails:** This usually means the Google Service Account does not have permission to write to the target folder. Ensure you have shared the `translation` folder (or your Drive root) with the service account's email address.
-*   **No `.pptx` Found in Drive:** The `drive_input_folder_id` may be incorrect, or the `file_name_regex` might be too strict. Double-check the folder ID and the regex.
-*   **JSON Parse Error from Model:** This is rare but can happen. Re-running the job will often fix it. If it persists, you can try lowering the `batch` size input.
+**Goal:** User drops a file in Drive → system detects → translates → uploads finished pack to Drive (final PPTX/Doc + bilingual CSV + audit) → optional Slack/email ping.
 
-## Maintenance
+1. **Folder contract (no UI needed)**
 
-*   **Model:** The OpenAI model can be updated via the `model` input in the workflow dispatch menu (defaults to `gpt-4o`).
-*   **Dependencies:** The Python dependencies are pinned in the `.github/workflows/translate-pptx.yml` file and can be updated as needed.
+* `Drive:/TranslationInbox/` (incoming, read-only to users)
+* `Drive:/TranslationOut/` (deliverables)
+* `Drive:/TranslationArchive/` (originals + logs)
 
-## Optional Enhancements (Future Considerations)
+2. **Detection**
 
-*   **Notifications:** Add Slack or email notifications on workflow completion, including direct links to the uploaded Drive files.
-*   **Scheduled Runs:** Configure the workflow to run on a schedule (e.g., nightly) to process new decks in an "inbox" folder on Google Drive.
-*   **OCR for Images:** Integrate an OCR tool like Tesseract to detect and translate text embedded in images.
+* **Simplest & robust:** GitHub Actions (cron every 2–5 min) + Drive Changes API using a stored `startPageToken`.
+* Keep a `jobs/STATE.json` in the repo (or Redis) with processed file IDs to avoid duplicates.
+
+3. **Job manifest**
+
+* On new file: create `job_<fileId>.json` with:
+
+  ```json
+  {"fileId":"...", "name":"...", "mime":"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+   "created":"...", "status":"QUEUED", "model":"gpt-4o-mini", "style":"gengo"}
+  ```
+* Status transitions: QUEUED → EXTRACTING → TRANSLATING → QA → DELIVERED (or FAILED, with reason).
+
+4. **Processing runner (idempotent)**
+
+* **Extract** → **Batch translate** (cache-first, slide/block-level) → **Autofit & layout pass** → **Style/autofix** → **Translated-only audit** → **Package**.
+* Drive upload results to `TranslationOut/` with a suffix: `originalName.en-US.[timestamp].pptx` plus CSV/JSON.
+* Always move source to `TranslationArchive/` and attach a `job.log`.
+
+5. **Notifications**
+
+* Optional: Email via Gmail API or Slack webhook with links to Drive outputs + a small summary (residual=0, changed=N, cost estimate).
+
+6. **Observability**
+
+* Write compact metrics per job: `tokens_in/out`, `cache_hit_rate`, `api_errors`, total duration.
+* (Optional) OpenAI **Webhooks**: add a `/webhook` endpoint (tiny Flask/Cloud Run) to receive translate batch updates; mirror to the job manifest.
+
+**Definition of Done**
+
+* Drop a PPTX in `TranslationInbox/` → see final artifacts in `TranslationOut/` with residual JP=0 (translated-only audit) and a Drive comment or Slack ping.
+
+---
+
+## B) Make GPT-5 work (without breaking anything)
+
+**Problem you saw:** `response_format` caused failures; client/model mismatch.
+
+1. **Adapter layer**
+
+* Add `llm_adapter.py` with a single `translate_batch(items, model, sys, temp)` that:
+
+  * Uses `/chat/completions` for 4o/4o-mini/4.1; **no `response_format`**.
+  * If `model.startswith("gpt-5")`, choose the correct endpoint & params (no unsupported args).
+  * Always wrap prompts with a strict **JSON-array only** instruction and validate with `JSONDecoder.raw_decode` (you already added).
+  * Feature flag: `--primary-model gpt-5` with **fallback chain** (`5 → 4.1 → 4o → 4o-mini`) on capability/HTTP errors.
+
+2. **Compatibility switch**
+
+* Centralize all OpenAI kwargs in one place; forbid stray params.
+* Add `--dry-run` to print composed payloads for a single batch to verify.
+
+3. **Resilience**
+
+* Per-batch retries with backoff; if still chatty → auto-split (`--on-batch-fail split` already there).
+* **Cost guard:** `--max-output-tokens` and a per-job token budget; abort gracefully if exceeded.
+
+4. **Tests**
+
+* Golden tests: 10 representative JP lines → verify strict JSON array parse and stable output across models.
+
+**DoD**
+
+* `--primary-model gpt-5` runs end-to-end; if not available, auto-fallback without failing the job.
+
+---
+
+## C) Expand to other document types (shared engine)
+
+**Unify on a "Document Abstraction Layer" (DAL)**
+
+1. **Common interfaces**
+
+```python
+class Extractor:
+    def extract(self, path) -> list[Block]  # Block = {id, kind, meta, jp_text}
+class BackProjector:
+    def apply(self, path_in, path_out, translations: dict[id, en_text]) -> None
+```
+
+2. **Handlers (start with easiest)**
+
+* **DOCX**: `python-docx`. Extract paragraphs, headings, tables (cell text). Back-project by run order; preserve styles.
+* **Markdown / TXT**: trivial; line/block based.
+* **XLSX**: `openpyxl`. Translate **values only** (skip formulas). Keep data types; don't touch numbers/dates.
+* **SRT/VTT**: segment by cue; preserve timestamps.
+* **PDF (text-only first)**: `pdfminer.six` for text; back-project as **bilingual PDF** or export to DOCX then reassemble (full layout-faithful PDF is a separate project—defer).
+* **Google Docs/Slides**: fetch via Drive export (DOCX/PPTX) and reuse the above; native API mapping optional later.
+
+3. **Re-use your core**
+
+* Same **batch translator**, cache, glossary, style autofix, and translated-only audit.
+* Same **autofit** concept where applicable:
+
+  * DOCX: allow "Automatically adjust right indent when grid is defined"; tighten spacing; avoid font size drops below a floor.
+  * XLSX: enable wrap, column autosize (optional).
+
+**DoD**
+
+* Drop a DOCX/XLSX/TXT → get translated file + bilingual CSV in `TranslationOut/`.
+
+---
+
+## D) Friction killers (small but high-impact)
+
+* **One command for everything:** `tt submit <local_file>` → uploads to `TranslationInbox/` and pings the runner.
+* **Cache across projects:** move cache to a shared KV (SQLite/Redis) with normalized JP keys (`NFKC + whitespace fold`) and optional fuzzy (rapidfuzz) for ≥0.96 similarity.
+* **Defaults baked in:** `--autofit-mode norm --font-scale-min 90000 --line-spacing-pct 100000 --style-preset gengo`.
+* **Strict gates:** Use **translated-only** audit in CI; fail if residual>0; warn on style mechanics only.
+* **Cost estimator:** quick preflight on extracted blocks: estimated tokens × model price → attach to job manifest and Slack ping.
+
+---
+
+## E) Concrete next tasks (merge-friendly)
+
+1. **Jobs + Drive poller (GH Action + small script)**
+
+   * `scripts/drive_poller.py` (changes.list → manifest → enqueue).
+   * Action workflow `on: schedule`: runs every few minutes; uses SA creds; posts status.
+
+2. **LLM adapter + fallback**
+
+   * `llm_adapter.py` with endpoint/param matrix; add `--primary-model` and fallback list.
+
+3. **DAL + DOCX handler**
+
+   * `extract_docx.py` / `apply_docx.py`; wire into `translate_any.py` driver (detect by MIME/extension).
+
+4. **Notifier**
+
+   * Simple Slack webhook or Gmail email with Drive links and cost/timing.
+
+5. **Cache sharing**
+
+   * `cache_store.py` with SQLite file `cache.db` (table: jp\_norm TEXT PK, en TEXT, ts INT, src TEXT).
+
+6. **Defaults + flags cleanup**
+
+   * Config file `.translationrc` (YAML/JSON) for model, style, autofit defaults; CLI reads it so you don't have to pass flags.
+
+If you want, I can turn this into three small PRs: (1) Drive poller + job runner, (2) LLM adapter + GPT-5 fallback, (3) DAL with DOCX handler.
+
+</details>
+
+## ✨ Features
+
+### 🎯 **Production-Ready Translation**
+- **Smart batch sizing**: Auto-optimizes API requests per model
+- **Comprehensive logging**: Real-time progress with ETA estimates  
+- **Robust error handling**: Auto-retry with intelligent backoff
+- **Layout preservation**: Maintains original formatting and design
+
+### 🧠 **AI-Powered Quality**
+- **Style consistency**: Unified tone and terminology across slides
+- **Content-aware processing**: Handles titles, bullets, tables differently
+- **Expansion management**: Prevents text overflow with smart compression
+- **Glossary integration**: Ensures consistent translation of key terms
+
+### 📊 **Advanced Features**
+- **Translation caching**: Avoids re-translating identical content
+- **Bilingual output**: CSV mapping for quality assurance
+- **Performance metrics**: Detailed audit reports and statistics
+- **Webhook integration**: Real-time progress tracking (optional)
+
+## 🚀 Quick Start
+
+### Prerequisites
+```bash
+export OPENAI_API_KEY=your_key_here
+```
+
+### Basic Usage
+```bash
+# Production presets (recommended)
+python scripts/translate_pptx_inplace.py \
+  --in input.pptx \
+  --out output_en.pptx \
+  --model gpt-4o-2024-08-06
+
+# Cost-optimized option
+python scripts/translate_pptx_inplace.py \
+  --in input.pptx \
+  --out output_en.pptx \
+  --model gpt-4o-mini
+```
+
+## 🎛️ Production Presets
+
+| Preset | Model | Batch Size | Use Case |
+|--------|-------|------------|----------|
+| **Conservative** | `gpt-4o-2024-08-06` | 8-12 (auto) | Maximum reliability |
+| **Balanced** | `gpt-4o-2024-08-06` | 10-14 (auto) | **Recommended** |
+| **Cost-lean** | `gpt-4o-mini` | 12-16 (auto) | Good quality, lower cost |
+
+*Batch sizes are automatically calculated based on content complexity and token limits.*
+
+## 📋 Command Line Options
+
+```bash
+python scripts/translate_pptx_inplace.py [OPTIONS]
+
+Required:
+  --in INPUT.pptx          Input PowerPoint file
+  --out OUTPUT.pptx        Output translated file
+
+Optional:
+  --model MODEL           AI model (default: auto-optimized)
+  --batch N               Batch size (default: auto-calculated)
+  --cache FILE            Translation cache (default: translation_cache.json)
+  --glossary FILE         Terminology glossary (default: glossary.json)
+  --slides RANGE          Process specific slides (e.g., "1-10")
+  --style-preset PRESET   Style guide preset (gengo, minimal)
+```
+
+## 📁 Project Structure
+
+```
+├── scripts/
+│   ├── translate_pptx_inplace.py  # Main translation engine
+│   ├── style_checker.py           # Style consistency system
+│   ├── eta.py                     # Progress estimation
+│   ├── webhook_server.py          # Real-time progress tracking
+│   └── audit_style.py            # Quality analysis
+├── tools/
+│   ├── derive_deck_tone.py       # Tone analysis
+│   └── estimate_cost.py          # Cost estimation
+├── inputs/                       # Source presentations
+├── outputs/                      # Translated results
+└── data/                        # Glossaries and configs
+```
+
+## 🔧 Advanced Configuration
+
+### Custom Glossary
+Create `glossary.json` for consistent terminology:
+```json
+{
+  "株式会社": "Corporation",
+  "取締役": "Director",
+  "戦略": "Strategy"
+}
+```
+
+### Style Consistency
+Configure tone and style preferences:
+```json
+{
+  "formality": "business_formal",
+  "technical_terms": "preserve_english",
+  "bullet_style": "concise_fragments"
+}
+```
+
+### Webhook Progress Tracking
+Run the webhook server for real-time updates:
+```bash
+# Terminal 1: Start webhook server
+uvicorn scripts.webhook_server:app --port 8000
+
+# Terminal 2: Run translation
+python scripts/translate_pptx_inplace.py --in input.pptx --out output.pptx
+```
+
+## 📊 Output Files
+
+Each translation run generates:
+
+| File | Description |
+|------|-------------|
+| `output_en.pptx` | Translated presentation |
+| `bilingual.csv` | Side-by-side translation mapping |
+| `audit.json` | Translation statistics and metrics |
+| `translation_cache.json` | Cached translations for efficiency |
+| `translation.log` | Detailed execution log |
+
+## 🛠️ System Architecture
+
+### Smart Batch Processing
+- **Token-aware sizing**: Calculates optimal batch sizes based on model limits
+- **Dynamic adjustment**: Reduces batch size automatically on high retry rates
+- **Content analysis**: Adjusts for complex content (tables, technical text)
+
+### Style Consistency Engine
+- **Multi-stage processing**: Pre-translation normalization → Translation → Post-processing
+- **Authority corrections**: Deterministic style fixes based on diagnostics
+- **Tone preservation**: Maintains consistent voice across the document
+
+### Error Resilience
+- **Progressive backoff**: 1s, 2s, 3s delays on retries
+- **Graceful degradation**: Falls back to smaller batches on failures
+- **Cache recovery**: Preserves work through interruptions
+
+## 📈 Performance Optimization
+
+### Batch Size Guidelines
+- **gpt-4o models**: 8-14 items (10k token target)
+- **gpt-4o-mini**: 12-18 items (8k token target)
+- **Complex content**: Use lower end of ranges
+- **Simple text**: Can use higher batch sizes
+
+### Cost Management
+- **Cache efficiency**: ~90% cache hit rate on re-runs
+- **Model selection**: gpt-4o-mini offers 10x cost savings
+- **Batch optimization**: Reduces API call overhead
+
+## 🚨 Troubleshooting
+
+### Common Issues
+
+**High retry rates (>5%)**
+- System automatically reduces batch size
+- Check API key limits and quotas
+- Consider using gpt-4o-mini for better stability
+
+**Text overflow in slides**
+- Enable PowerPoint's "Shrink text on overflow"
+- Use style presets for more concise translations
+- Adjust font sizes manually if needed
+
+**Cache corruption**
+- Delete `translation_cache.json` to reset
+- Use `--cache new_cache.json` for fresh cache
+
+### Debug Mode
+```bash
+# Enable verbose logging
+export PYTHONPATH=scripts
+python -u scripts/translate_pptx_inplace.py --in input.pptx --out output.pptx 2>&1 | tee debug.log
+```
+
+## 🔮 Future Enhancements
+
+- **OCR integration**: Translate text in images
+- **Multi-language support**: Beyond JA→EN
+- **Real-time collaboration**: Shared translation sessions  
+- **Template management**: Reusable style configurations
+- **Quality scoring**: Automatic translation assessment
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests and documentation
+5. Submit a pull request
+
+---
+
+*Built with ❤️ for efficient, high-quality presentation translation.*

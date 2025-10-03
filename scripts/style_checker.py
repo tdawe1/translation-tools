@@ -28,7 +28,34 @@ def create_style_checker_prompt(translations: List[str], glossary: Dict[str, str
     
     style_guide = get_style_guide()
     
+feature/webhook-progress-tracking
+
+def create_style_checker_prompt_v2(glossary: Optional[Dict[str, str]] = None, deck_tone: Optional[Dict[str, Any]] = None) -> str:
+    """Create prompt for style checking with JSON diagnostics output."""
+    
+    glossary_section = ""
+    if glossary:
+        glossary_items = [f'"{jp}" → "{en}"' for jp, en in list(glossary.items())[:10]]
+        glossary_section = f"""
+**Key glossary terms:**
+{'; '.join(glossary_items)}
+"""
+
+    deck_tone_section = ""
+    if deck_tone:
+        deck_tone_section = f"""
+**Deck Tone Profile (for tie-breaking ambiguous cases):**
+{json.dumps(deck_tone, ensure_ascii=False, indent=2)}
+"""
+    
+    style_guide = get_style_guide()
+    
+ main
     return f"""You are a style reviewer for marketing slide translations. Review the provided English translations and return ONLY a JSON object with style diagnostics.
+
+Use moderate creativity and variation in your analysis (temperature=0.7). Provide consistent but not overly rigid corrections.
+
+The primary goal is to faithfully convey the tone and intent of the original Japanese text in natural English.
 
 {style_guide}
 {glossary_section}
@@ -70,6 +97,8 @@ def check_title_case_violations(translations: List[str]) -> List[Dict[str, Any]]
     violations = []
     
     for i, text in enumerate(translations):
+        if not text:
+            continue
         # Heuristic: likely title if short and doesn't end with sentence punctuation
         clean_text_for_check = re.sub(r'\[/?[^\]]+\]', '', text)
         if len(clean_text_for_check.split()) <= 12 and not clean_text_for_check.strip().endswith(('.', ':', ';')):
@@ -98,7 +127,9 @@ def check_bullet_punctuation(translations: List[str]) -> List[Dict[str, Any]]:
     violations = []
     
     for i, text in enumerate(translations):
-        clean_text = re.sub(r'[[/?[^]]+]]', '', text).strip()
+        if not text:
+            continue
+        clean_text = re.sub(r'\[/?[^\]]+\]', '', text).strip()
         
         # Check if likely bullet content (not title, has bullet indicators, or is fragment-like)
         has_bullet_tags = '[li-' in text or '•' in text
@@ -127,7 +158,9 @@ def check_glossary_violations(translations: List[str], glossary: Dict[str, str])
     violations = []
     
     for i, text in enumerate(translations):
-        clean_text = re.sub(r'[[/?[^]]+]]', '', text).lower()
+        if not text:
+            continue
+        clean_text = re.sub(r'\[/?[^\]]+\]', '', text).lower()
         
         for jp_term, expected_en in glossary.items():
             expected_lower = expected_en.lower()
@@ -160,7 +193,9 @@ def check_banned_phrases(translations: List[str]) -> List[Dict[str, Any]]:
     violations = []
     
     for i, text in enumerate(translations):
-        clean_text = re.sub(r'[[/?[^]]+]]', '', text)
+        if not text:
+            continue
+        clean_text = re.sub(r'\[/?[^\]]+\]', '', text)
         
         for banned, suggested in BANNED_PHRASES.items():
             pattern = re.compile(r'\b' + re.escape(banned) + r'\b', re.IGNORECASE)
@@ -189,6 +224,8 @@ def check_punctuation_errors(translations: List[str]) -> List[Dict[str, Any]]:
     }
     
     for i, text in enumerate(translations):
+        if not text:
+            continue
         for jp_char, en_char in jp_punct_patterns.items():
             if jp_char in text:
                 violations.append({
@@ -210,6 +247,8 @@ def analyze_parallelism(translations: List[str]) -> List[Dict[str, Any]]:
     current_group = []
     
     for i, text in enumerate(translations):
+        if not text:
+            continue
         if '[li-' in text or '•' in text or (len(text.split()) < 15 and not text.endswith('.')):
             current_group.append((i, text))
         else:
@@ -227,8 +266,8 @@ def analyze_parallelism(translations: List[str]) -> List[Dict[str, Any]]:
             texts = [text for _, text in group]
             
             # Simplified parallelism check: look for mixed verb forms
-            starts_with_gerund = sum(1 for t in texts if re.match(r'^\w+ing\b', re.sub(r'[[/?[^]]+]]', '', t)))
-            starts_with_verb = sum(1 for t in texts if re.match(r'^\w+\b', re.sub(r'[[/?[^]]+]]', '', t)))
+            starts_with_gerund = sum(1 for t in texts if re.match(r'^\w+ing\b', re.sub(r'\[/?[^\]]+\]', '', t)))
+            starts_with_verb = sum(1 for t in texts if re.match(r'^\w+\b', re.sub(r'\[/?[^\]]+\]', '', t)))
             
             if starts_with_gerund > 0 and starts_with_verb > 0 and starts_with_gerund != len(texts):
                 issues.append({
@@ -330,20 +369,26 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Apply title case fixes
     for violation in style_issues.get("title_case_violations", []):
+        if not isinstance(violation, dict) or "index" not in violation:
+            continue
         index = violation["index"]
-        if 0 <= index < len(fixed):
+        if 0 <= index < len(fixed) and fixed[index] is not None:
             fixed[index] = violation.get("suggested_fix", fixed[index])
     
     # Fix bullet punctuation
     for violation in style_issues.get("bullet_terminal_punctuation", []):
+        if not isinstance(violation, dict) or "index" not in violation:
+            continue
         index = violation["index"] 
-        if 0 <= index < len(fixed):
+        if 0 <= index < len(fixed) and fixed[index] is not None:
             fixed[index] = violation.get("suggested_fix", fixed[index])
     
     # Replace banned phrases
     for violation in style_issues.get("banned_phrases", []):
+        if not isinstance(violation, dict) or "index" not in violation or "phrase" not in violation or "suggested" not in violation:
+            continue
         index = violation["index"]
-        if 0 <= index < len(fixed):
+        if 0 <= index < len(fixed) and fixed[index] is not None:
             old_phrase = violation["phrase"]
             new_phrase = violation["suggested"]
             fixed[index] = re.sub(
@@ -355,16 +400,20 @@ def apply_style_fixes(translations: List[str], diagnostics: Dict[str, Any]) -> L
     
     # Fix punctuation errors
     for violation in style_issues.get("punctuation_errors", []):
+        if not isinstance(violation, dict) or "index" not in violation or "original" not in violation or "correct" not in violation:
+            continue
         index = violation["index"]
-        if 0 <= index < len(fixed):
+        if 0 <= index < len(fixed) and fixed[index] is not None:
             original = violation["original"]
             correct = violation["correct"]
             fixed[index] = fixed[index].replace(original, correct)
     
     # Glossary fixes (simple token replacement)
     for violation in style_issues.get("glossary_violations", []):
+        if not isinstance(violation, dict) or "index" not in violation or "found" not in violation or "expected" not in violation:
+            continue
         index = violation["index"]
-        if 0 <= index < len(fixed):
+        if 0 <= index < len(fixed) and fixed[index] is not None:
             found_term = violation["found"]
             expected_term = violation["expected"]
             fixed[index] = re.sub(
@@ -392,12 +441,12 @@ def model_style_check(client, translations: List[str],
     Returns:
         Structured style diagnostics
     """
-    prompt = create_style_checker_prompt(glossary, deck_tone)
+    prompt = create_style_checker_prompt_v2(glossary, deck_tone)
     
     # Add translations to prompt
     numbered_translations = []
     for i, translation in enumerate(translations):
-        numbered_translations.append(f"{i}: {translation}")
+        numbered_translations.append(f"{i}: {translation or ''}")
     
     full_prompt = prompt + "\n\n" + "\n".join(numbered_translations)
     
