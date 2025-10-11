@@ -83,3 +83,5 @@ translation_cache*.json
 *.csv
 *.log
 prompt*.md
+# Local translation templates
+translations/*.json
