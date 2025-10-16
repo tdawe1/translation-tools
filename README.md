@@ -1,3 +1,25 @@
+# 🧩 Translations Pipeline (JA→EN) — Project Overview
+
+End‑to‑end tools to translate Japanese PPTX and DOCX to English while preserving layout and style. Supports fully local/manual workflows (no API) and online model‑assisted runs, with caching, audits, and formatting safeguards.
+
+Quick links:
+- Architecture: docs/ARCHITECTURE.md
+- Repository Structure: docs/REPO_STRUCTURE.md
+- Proposed Restructure: docs/RESTRUCTURE_PLAN.md
+- Style Guide (Gengo‑aligned): STYLE_GUIDE.md (or set `STYLE_GUIDE_FILE`)
+- Glossary: glossary.json
+
+Common tasks:
+- PPTX (offline with cache + formatting):
+  - `python scripts/translate_pptx_inplace.py --in inputs/demo.pptx --out outputs/demo_en.pptx --offline --glossary glossary.json`
+- PPTX (apply cache only, no API):
+  - `python scripts/apply_cache_only.py --in inputs/demo.pptx --out outputs/demo_en.pptx --cache translation_cache.json`
+- DOCX (manual/local):
+  - Prepare: `python scripts/manual_docx_translation.py prepare --input inputs/source.docx --template translations/source_template.json`
+  - Apply:   `python scripts/manual_docx_translation.py apply --input inputs/source.docx --translations translations/source_translations.json --output outputs/source_en.docx`
+
+—
+
 # 🚀 PowerPoint Translation Pipeline (JA→EN)
 
 A production-ready translation system for converting Japanese PowerPoint presentations to English while preserving layout, formatting, and visual elements.

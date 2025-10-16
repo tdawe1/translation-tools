@@ -86,7 +86,7 @@ class TranslationOrchestrator:
                 writer = csv.writer(f)
                 writer.writerow(['Original', 'Translated', 'Status'])
                 # Extract actual segments from the file
-                from scripts.docx_adapter import DocxAdapter
+                from scripts.docx.adapter import DocxAdapter
                 adapter = DocxAdapter()
                 try:
                     segments = adapter.extract_segments(str(input_path))
@@ -116,7 +116,7 @@ class TranslationOrchestrator:
                 }
             }
             # Extract actual segments from the file
-            from scripts.docx_adapter import DocxAdapter
+            from scripts.docx.adapter import DocxAdapter
             adapter = DocxAdapter()
             try:
                 segments = adapter.extract_segments(str(input_path))
