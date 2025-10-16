@@ -34,6 +34,7 @@ glossary.json
 translation_cache*.json
 prompt*.md
 !prompt.example.md
+AGENTS.md
 
 # Allow example templates
 !.env.example
