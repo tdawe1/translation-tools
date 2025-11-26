@@ -1584,6 +1584,19 @@ def main():
     calls = 0  # Initialize calls counter
     if missing:
         if args.concurrency > 1:
+            if args.offline:
+                logging.error("Concurrency > 1 is not supported in offline mode. Use --concurrency 1 with --offline.")
+                sys.exit(2)
+            if "gemini" in args.model.lower():
+                logging.error("Gemini models are not supported with --concurrency > 1. Use --concurrency 1 for Gemini models.")
+                sys.exit(2)
+
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
+            base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+            if not api_key:
+                logging.error("OPENAI_API_KEY is required for async translation with concurrency > 1.")
+                sys.exit(2)
+
             # Async path
             print(f"Async translation: {len(missing)} items, concurrency={args.concurrency}")
             if base_url:
