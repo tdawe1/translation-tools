@@ -190,12 +190,13 @@ class PDFAuditor:
         formatting_score = self._assess_formatting_consistency(text)
         
         # Overall quality score
-        weights = {
-            'japanese_penalty': min(jp_percentage / 5.0, 0.5),  # Lose up to 0.5 for Japanese
-            'completeness': completeness_score * 0.3,
-            'formatting': formatting_score * 0.2
-        }
-        overall_score = max(0.0, 1.0 - weights['japanese_penalty'] + weights['completeness'] + weights['formatting'])
+        japanese_penalty = min(jp_percentage / 5.0, 0.5)
+        # Weighted average: 50% base (penalised by JP), 30% completeness, 20% formatting
+        overall_score = max(0.0, min(1.0, 
+            (1.0 - japanese_penalty) * 0.5 + 
+            completeness_score * 0.3 + 
+            formatting_score * 0.2
+        ))
         
         # Generate recommendations
         recommendations = []
