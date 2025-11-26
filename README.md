@@ -269,24 +269,36 @@ If you want, I can turn this into three small PRs: (1) Drive poller + job runner
 ## 🚀 Quick Start
 
 ### Prerequisites
-```bash
-export OPENAI_API_KEY=your_key_here
-```
+- Offline runs (no API): no key required. You may set `OPENAI_API_KEY=dummy` for tools that expect it; it is not used when `--offline` is supplied.
+- Online runs (OpenAI API): export a real key:
+  ```bash
+  export OPENAI_API_KEY=your_key_here
+  ```
 
 ### Basic Usage
 ```bash
-# Production presets (recommended)
+# Offline (no API; Codex‑friendly)
+python scripts/translate_pptx_inplace.py \
+  --in input.pptx \
+  --out output_en.pptx \
+  --offline
+
+# Online (OpenAI API) — production presets
 python scripts/translate_pptx_inplace.py \
   --in input.pptx \
   --out output_en.pptx \
   --model gpt-4o-2024-08-06
 
-# Cost-optimized option
+# Online (cost-optimized)
 python scripts/translate_pptx_inplace.py \
   --in input.pptx \
   --out output_en.pptx \
   --model gpt-4o-mini
 ```
+
+### Codex CLI vs API
+- Prefer the offline path during local development or when pairing via Codex CLI. It applies cache/style/formatting without making network calls.
+- Use the online path only when you intend to call OpenAI; set `OPENAI_API_KEY` and pass `--model`.
 
 ## 🎛️ Production Presets
 

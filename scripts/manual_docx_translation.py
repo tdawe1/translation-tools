@@ -26,6 +26,14 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 import xml.etree.ElementTree as ET
 
+# Ensure we import the external 'python-docx' library, not local 'scripts/docx'
+import sys, os
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR in sys.path:
+    try:
+        sys.path.remove(_SCRIPT_DIR)
+    except ValueError:
+        pass
 from docx import Document
 
 
