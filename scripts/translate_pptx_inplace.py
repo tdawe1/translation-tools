@@ -1442,9 +1442,7 @@ def main():
             if "gemini" in args.model.lower():
                 logging.error("Gemini models are not supported with --concurrency > 1. Use concurrency=1 or an OpenAI model.")
                 sys.exit(2)
-            api_key = os.getenv("OPENAI_API_KEY")
-            base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
-            async_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            async_client = AsyncOpenAI(api_key=api_key, base_url=base_url or None)
             
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
