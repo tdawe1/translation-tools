@@ -17,9 +17,12 @@ Features:
 """
 
 import argparse
+import array
 import json
 import logging
+import math
 import os
+import platform
 import re
 import sys
 import unicodedata
@@ -121,24 +124,35 @@ class PDFBackProjector:
         }
         self._font_cache: Dict[str, fitz.Font] = {}  # font_path -> Font object
 
-        # Preferred font files (installed on the system)
+        # Preferred font files (installed on the system) with platform-aware defaults
+        system_name = platform.system()
+        if system_name == "Darwin":
+            noto_base = "/Library/Fonts"
+            local_base = "/Library/Fonts"
+        elif system_name == "Windows":
+            noto_base = os.path.expandvars(r"%LOCALAPPDATA%\\Microsoft\\Windows\\Fonts")
+            local_base = noto_base
+        else:
+            noto_base = "/usr/share/fonts/noto-cjk"
+            local_base = "/usr/local/share/fonts"
+
         font_paths = {
-            "sans_cjk_regular": "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-            "sans_cjk_bold": "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
-            "serif_cjk_regular": "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc",
-            "serif_cjk_bold": "/usr/share/fonts/noto-cjk/NotoSerifCJK-Bold.ttc",
-            "latin_sans_regular": "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-            "latin_sans_bold": "/usr/share/fonts/noto/NotoSans-Bold.ttf",
+            "sans_cjk_regular": os.path.join(noto_base, "NotoSansCJK-Regular.ttc"),
+            "sans_cjk_bold": os.path.join(noto_base, "NotoSansCJK-Bold.ttc"),
+            "serif_cjk_regular": os.path.join(noto_base, "NotoSerifCJK-Regular.ttc"),
+            "serif_cjk_bold": os.path.join(noto_base, "NotoSerifCJK-Bold.ttc"),
+            "latin_sans_regular": os.path.join(os.path.dirname(noto_base), "noto", "NotoSans-Regular.ttf"),
+            "latin_sans_bold": os.path.join(os.path.dirname(noto_base), "noto", "NotoSans-Bold.ttf"),
             # User-installed fonts frequently present in customer PDFs
-            "helvetica_neue_regular": "/usr/local/share/fonts/h/Helvetica_Neue_Regular.otf",
-            "helvetica_neue_bold": "/usr/local/share/fonts/h/Helvetica_Neue_Condensed_Bold.ttf",
-            "hiragino_gothic": "/usr/local/share/fonts/h/Hiragino_Kaku_Gothic_Pro_W6.otf",
-            "hiragino_maru": "/usr/local/share/fonts/h/Hiragino_Maru_Gothic_Pro_W4.otf",
-            "hiragino_mincho": "/usr/local/share/fonts/h/Hiragino_Mincho_ProN_W3.otf",
-            "rodin_regular": "/usr/local/share/fonts/f/FOT_Rodin_Pro_M.otf",
-            "rodin_bold": "/usr/local/share/fonts/f/FOT_Rodin_Pro_DB.otf",
-            "rodinntlg_regular": "/usr/local/share/fonts/f/FOT_RodinNTLG_Pro_M.otf",
-            "rodinntlg_bold": "/usr/local/share/fonts/f/FOT_RodinNTLG_Pro_DB.otf",
+            "helvetica_neue_regular": os.path.join(local_base, "h", "Helvetica_Neue_Regular.otf"),
+            "helvetica_neue_bold": os.path.join(local_base, "h", "Helvetica_Neue_Condensed_Bold.ttf"),
+            "hiragino_gothic": os.path.join(local_base, "h", "Hiragino_Kaku_Gothic_Pro_W6.otf"),
+            "hiragino_maru": os.path.join(local_base, "h", "Hiragino_Maru_Gothic_Pro_W4.otf"),
+            "hiragino_mincho": os.path.join(local_base, "h", "Hiragino_Mincho_ProN_W3.otf"),
+            "rodin_regular": os.path.join(local_base, "f", "FOT_Rodin_Pro_M.otf"),
+            "rodin_bold": os.path.join(local_base, "f", "FOT_Rodin_Pro_DB.otf"),
+            "rodinntlg_regular": os.path.join(local_base, "f", "FOT_RodinNTLG_Pro_M.otf"),
+            "rodinntlg_bold": os.path.join(local_base, "f", "FOT_RodinNTLG_Pro_DB.otf"),
         }
         # Only keep font paths that exist on this machine
         self.font_paths = {k: v for k, v in font_paths.items() if Path(v).exists()}
@@ -158,9 +172,18 @@ class PDFBackProjector:
 
     def _select_font_path(self, is_bold: bool, prefer_serif: bool = False) -> str:
         """Pick the best Noto font path based on weight and serif/sans preference."""
-        if prefer_serif:
-            return self.font_paths["serif_cjk_bold" if is_bold else "serif_cjk_regular"]
-        return self.font_paths["sans_cjk_bold" if is_bold else "sans_cjk_regular"]
+        serif_key = "serif_cjk_bold" if is_bold else "serif_cjk_regular"
+        sans_key = "sans_cjk_bold" if is_bold else "sans_cjk_regular"
+        primary_key = serif_key if prefer_serif else sans_key
+        fallback_key = sans_key if prefer_serif else serif_key
+
+        path = self.font_paths.get(primary_key) or self.font_paths.get(fallback_key)
+        if not path:
+            raise FileNotFoundError(
+                "No suitable CJK font found. Checked keys: "
+                f"{primary_key}, {fallback_key}. Configure LM_FONT_PATHS or install Noto fonts."
+            )
+        return path
 
     def _font_candidates(self, text_block: TextBlock) -> List[str]:
         """Return a prioritized list of font file paths for this block."""
@@ -202,7 +225,6 @@ class PDFBackProjector:
             data = pix.samples
             if not data:
                 return (1, 1, 1)
-            import array
             arr = array.array("B", data)
             total_pixels = len(arr) // 3
             if total_pixels == 0:
@@ -221,13 +243,13 @@ class PDFBackProjector:
             data = pix.samples
             if not data:
                 return 0.0
-            import array
             arr = array.array("B", data)
             total_pixels = len(arr) // 3
             if total_pixels == 0:
                 return 0.0
-            rs = arr[0::3]; gs = arr[1::3]; bs = arr[2::3]
-            import math
+            rs = arr[0::3]
+            gs = arr[1::3]
+            bs = arr[2::3]
             def var(channel):
                 n = len(channel)
                 mean = sum(channel)/n
@@ -638,13 +660,9 @@ class PDFBackProjector:
             # Insert text within original bounding box to preserve wrapping
             rect = fitz.Rect(text_block.bbox)
             
-            # CRITICAL FIX: Draw a white background rectangle to cover original text
-            # This ensures readability even if redaction failed or was incomplete
+            # Cover the original text with a background sampled from the region
             try:
-                # Draw a slightly larger white box to cover potential anti-aliasing artifacts
-                # but respect the clip to avoid overwriting neighbors
-                bg_rect = rect + (-1, -1, 1, 1) 
-                page.draw_rect(bg_rect, fill=(1, 1, 1), color=None, overlay=True)
+                self._cover_block_background(page, rect, text_block.font_size)
             except Exception as e:
                 logging.warning(f"Failed to draw background cover: {e}")
 

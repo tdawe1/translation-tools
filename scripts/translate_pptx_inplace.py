@@ -126,7 +126,7 @@ class GeminiClient:
                     elif role == "assistant":
                         contents.append({"role": "model", "parts": [{"text": text_content}]})
                 
-                url = f"{self.client.base_url}/{model}:generateContent?key={self.client.api_key}"
+                url = f"{self.client.base_url}/{model}:generateContent"
                 
                 generation_config = {"temperature": temperature}
                 if response_format and response_format.get("type") == "json_object":
@@ -140,13 +140,14 @@ class GeminiClient:
                 if system_instruction:
                     payload["systemInstruction"] = system_instruction
                 
+                headers = {"x-goog-api-key": self.client.api_key, "Content-Type": "application/json"}
                 logging.debug(f"Sending request to Gemini API: {url}")
                 try:
-                    response = requests.post(url, json=payload, timeout=60)
-                except requests.exceptions.Timeout:
-                    raise Exception("Gemini API request timed out after 60 seconds")
+                    response = requests.post(url, json=payload, headers=headers, timeout=60)
+                except requests.exceptions.Timeout as e:
+                    raise Exception("Gemini API request timed out after 60 seconds") from e
                 except requests.exceptions.RequestException as e:
-                    raise Exception(f"Gemini API request failed: {e}")
+                    raise Exception(f"Gemini API request failed: {e}") from e
 
                 logging.debug(f"Received response from Gemini API: {response.status_code}")
                 

@@ -3,7 +3,7 @@ run_lm_batch.py
 
 Batch translate JP strings via an OpenAI-compatible LM Studio endpoint.
 Defaults:
-  LM_BASE_URL=http://192.168.0.25:1234/v1
+  LM_BASE_URL=http://localhost:1234/v1
   LM_MODEL=gemma-2-2bn-jpn
   LM_BATCH_SIZE=15
   LM_TIMEOUT=120
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import requests
 
-BASE = os.getenv("LM_BASE_URL", "http://192.168.0.25:1234/v1")
+BASE = os.getenv("LM_BASE_URL", "http://localhost:1234/v1")
 # Default to a known-good LM Studio model ID; override with LM_MODEL env.
 MODEL = os.getenv("LM_MODEL", "gemma-2-2b-jpn-it-translate")
 BATCH = int(os.getenv("LM_BATCH_SIZE", "15"))

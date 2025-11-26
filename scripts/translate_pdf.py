@@ -31,6 +31,7 @@ import os
 import sys
 import csv
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
@@ -667,11 +668,34 @@ Environment:
         files_to_backup = []
         if os.path.exists(args.output_path):
             files_to_backup.append(args.output_path)
+        csv_candidate = args.output_path.replace('.pdf', '_bilingual.csv')
+        if os.path.exists(csv_candidate):
+            files_to_backup.append(csv_candidate)
+        audit_candidate = args.output_path.replace('.pdf', '_audit.json')
+        if os.path.exists(audit_candidate):
+            files_to_backup.append(audit_candidate)
         if os.path.exists(args.cache):
             files_to_backup.append(args.cache)
-        
+        if os.path.exists("pdf_translation.log"):
+            files_to_backup.append("pdf_translation.log")
+
         if files_to_backup:
-            backup_existing_files(args.cache, args.cache, args.cache, "pdf_translation.log")
+            # Backup the translated PDF directly, then use shared helper for other outputs
+            for file_path in files_to_backup:
+                if file_path == args.output_path:
+                    try:
+                        backup_name = get_timestamped_filename(file_path)
+                        shutil.copy2(file_path, backup_name)
+                        print(f"Backed up {file_path} -> {backup_name}")
+                    except Exception as exc:
+                        print(f"Warning: failed to backup {file_path}: {exc}")
+
+            backup_existing_files(
+                args.cache,
+                csv_candidate,
+                audit_candidate,
+                "pdf_translation.log",
+            )
     
     # Create output directory if needed
     output_dir = os.path.dirname(args.output_path)
