@@ -18,6 +18,35 @@ Common tasks:
   - Prepare: `python scripts/manual_docx_translation.py prepare --input inputs/source.docx --template translations/source_template.json`
   - Apply:   `python scripts/manual_docx_translation.py apply --input inputs/source.docx --translations translations/source_translations.json --output outputs/source_en.docx`
 
+### Security: API Key Management
+
+**Best practices for handling API keys:**
+
+1. **Never commit keys to the repository**
+   - Add `.env` to `.gitignore`
+   - Use environment variables or secret managers
+
+2. **Use dotenv or direnv**
+   ```bash
+   # Install python-dotenv
+   pip install python-dotenv
+
+   # Create .env file (gitignored)
+   echo "OPENAI_API_KEY=sk-..." > .env
+   ```
+
+3. **Scope keys per run**
+   ```bash
+   # Temporary key for single command
+   OPENAI_API_KEY=sk-... python scripts/translate_pptx_inplace.py ...
+   ```
+
+4. **Avoid shell history leaks**
+   ```bash
+   # Prefix with space to avoid history (if HISTCONTROL=ignorespace)
+    export OPENAI_API_KEY=sk-...
+   ```
+
 —
 
 # 🚀 PowerPoint Translation Pipeline (JA→EN)
