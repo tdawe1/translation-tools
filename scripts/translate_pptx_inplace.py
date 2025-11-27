@@ -29,32 +29,16 @@ from xml.etree import ElementTree as ET
 from pathlib import Path
 from datetime import datetime
 
-def get_timestamped_filename(filepath):
-    """Create a timestamped backup filename if the file exists."""
-    if os.path.exists(filepath):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path_obj = Path(filepath)
-        backup_name = f"{path_obj.stem}_{timestamp}{path_obj.suffix}"
-        return backup_name
-    return filepath
-
-def backup_existing_files(cache_file, bilingual_csv, audit_json, log_file):
-    """Backup existing output files with timestamps."""
-    files_backed_up = []
-    
-    for filepath in [cache_file, bilingual_csv, audit_json, log_file]:
-        if os.path.exists(filepath):
-            backup_name = get_timestamped_filename(filepath)
-            shutil.move(filepath, backup_name)
-            files_backed_up.append(f"{filepath} -> {backup_name}")
-    
-    if files_backed_up:
-        print("Backed up existing files:")
-        for backup in files_backed_up:
-            print(f"  {backup}")
-        print()
-    
-    return files_backed_up
+from utils.file_operations import backup_existing_files
+from utils.text_processing import JP_ANY, count_jp_chars, mask_fragile, unmask_fragile
+from utils.xml_utils import (
+    A_NS,
+    P_NS,
+    normalize_para_text,
+    set_para_text,
+    _ensure_autofit,
+    _ensure_autofit_on_tree,
+)
 
 # Logging will be set up in main() after parsing args
 
@@ -75,164 +59,6 @@ try:
 except Exception:
     print("ERROR: The 'openai' package is required. Install via: pip install openai", file=sys.stderr)
     raise
-
-# ---- Regex helpers ----
-JP_CORE = r'\u3040-\u309f\u30a0-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff'
-CJK_PUNCT = r'\u3000-\u303f'
-FULLWIDTH = r'\uff00-\uffef'
-JP_ANY = re.compile(f'[{JP_CORE}{CJK_PUNCT}{FULLWIDTH}]')
-
-# Masking patterns for fragile content
-RX_NUM = re.compile(r"\d[\d,.\-\u2013%]*")
-RX_URL = re.compile(r"https?://\S+|www\.\S+")
-RX_CODE= re.compile(r"[A-Z]{2,}\d[\w\-]*")
-
-A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
-P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
-
-# Global storage for notes content during processing
-_slide_notes_content = {}
-
-# Global storage for slides needing layout tightening
-_slides_need_tightening = set()
-
-def count_jp_chars(s: str) -> int:
-    return len(JP_ANY.findall(s))
-
-def mask_fragile(s):
-    i, maps = 1, {}
-    def do(rx, tag, s):
-        nonlocal i
-        def repl(m):
-            nonlocal i
-            k = f"⟦{tag}_{i}⟧"
-            maps[k] = m.group(0)
-            i += 1
-            return k
-        return rx.sub(repl, s)
-    s = do(RX_URL,"URL",s); s = do(RX_NUM,"NUM",s); s = do(RX_CODE,"CODE",s)
-    return s, maps
-
-def unmask_fragile(s, maps):
-    for k, v in maps.items():
-        s = s.replace(k, v)
-    return s
-
-def normalize_para_text(p_el):
-    """Extract full visible text for a paragraph (concatenate runs, insert '\n' for a:br)."""
-    br_tag = A_NS + "br"
-    t_tag = A_NS + "t"
-    r_tag = A_NS + "r"
-
-    parts = []
-    for node in p_el:
-        if node.tag == r_tag:
-            t = node.find(t_tag)
-            parts.append("" if t is None or t.text is None else t.text)
-        elif node.tag == br_tag:
-            parts.append("\n")
-        else:
-            t = node.find(f".//{t_tag}")
-            if t is not None and t.text:
-                parts.append(t.text)
-
-    return "".join(parts)
-
-def set_para_text(p_el, new_text: str):
-    """Word-aware replacement. Preserves word boundaries and turns '\n' into <a:br/>."""
-    t_tag = A_NS + "t"
-    r_tag = A_NS + "r"
-    br_tag = A_NS + "br"
-    import re
-
-    # Collect runs (preserve overall styling distribution), clear <a:br/> and run text
-    runs = [child for child in p_el if child.tag == r_tag]
-    if not runs:
-        r = ET.Element(r_tag)
-        ET.SubElement(r, t_tag).text = ""
-        p_el.insert(0, r)
-        runs = [r]
-
-    for child in list(p_el):
-        if child.tag == br_tag:
-            p_el.remove(child)
-    for r in runs:
-        t = r.find(t_tag)
-        if t is None:
-            t = ET.SubElement(r, t_tag)
-        t.text = ""
-
-    # Tokenize: keep whitespace; use None sentinel for newline
-    def tokenize(s): return re.findall(r"\S+|\s+", s)
-    tokens = []
-    lines = new_text.split("\n")
-    for i, line in enumerate(lines):
-        tokens.extend(tokenize(line))
-        if i < len(lines) - 1:
-            tokens.append(None)  # newline marker
-
-    # Single run: dump text, insert <a:br/> at markers
-    if len(runs) == 1:
-        t = runs[0].find(t_tag)
-        buf = []
-        br_count = 0
-        for tok in tokens:
-            if tok is None:
-                # Insert <a:br/> after the run
-                br = ET.Element(br_tag)
-                run_idx = list(p_el).index(runs[0])
-                p_el.insert(run_idx + 1 + br_count, br)
-                br_count += 1
-            else:
-                buf.append(tok)
-        t.text = "".join(buf).strip()
-        return
-
-    # Multi-run: distribute on word boundaries proportional to original text lengths
-    orig_lens = [len((r.find(t_tag).text or "")) for r in runs]
-    total_words = sum(len(x) for x in tokens if isinstance(x, str))
-    total_base = sum(orig_lens) or total_words or 1
-    targets = []
-    acc = 0
-    for L in orig_lens:
-        share = round(total_words * (L / total_base))
-        targets.append(share)
-        acc += share
-    if targets:
-        targets[-1] += (total_words - acc)  # fix rounding drift
-
-    def consume(n_chars):
-        taken = []
-        count = 0
-        while tokens:
-            tok = tokens[0]
-            if tok is None:  # stop before newline; caller will insert <a:br/>
-                break
-            need = len(tok)
-            # respect word boundaries
-            if count > 0 and not tok.isspace() and count + need > n_chars:
-                break
-            taken.append(tokens.pop(0))
-            count += need
-            if tokens and tokens[0] is None:
-                break
-        return "".join(taken)
-
-    # Fill each run, inserting <a:br/> exactly where newlines occur
-    for r, n in zip(runs, targets):
-        t = r.find(t_tag)
-        t.text = consume(n)
-        while tokens and tokens[0] is None:
-            tokens.pop(0)
-            br = ET.Element(br_tag)
-            run_idx = list(p_el).index(r)
-            p_el.insert(run_idx + 1, br)
-
-    # Any leftovers go into the last run
-    if tokens:
-        tail = "".join(tok for tok in tokens if isinstance(tok, str))
-        last_t = runs[-1].find(t_tag)
-        last_t.text = (last_t.text or "") + tail
 
 def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set | None = None):
     """Return a flat list of (slide_name, paragraph_index, text)."""
@@ -255,222 +81,16 @@ def extract_all_paragraphs(z: zipfile.ZipFile, slide_range: set | None = None):
                 paras.append((sf, idx, text))
     return paras, slide_files
 
-def _ensure_autofit(root):
-    # For every txBody, ensure <a:bodyPr><a:normAutofit/></a:bodyPr>
-    for tx in root.iter(A_NS + "txBody"):
-        bodyPr = tx.find(A_NS + "bodyPr")
-        if bodyPr is None:
-            bodyPr = ET.SubElement(tx, A_NS + "bodyPr")
-        if bodyPr.find(A_NS + "normAutofit") is None and bodyPr.find(A_NS + "spAutoFit") is None:
-            ET.SubElement(bodyPr, A_NS + "normAutofit")
+from utils.openai_api import (
+    _use_responses_api,
+    make_array_schema,
+    _responses_create,
+    _chat_create,
+    _chat_create_async,
+    _responses_create_compat_async,
+)
+from utils.json_utils import extract_json_array
 
-def _ensure_autofit_on_tree(root, mode: str, font_scale_min: int, line_spacing_pct: int, tight_margins: bool):
-    """Enable slide-wide text autofit & spacing. Safe, mechanical; does not change wording."""
-    bodyPr_tag = A_NS + "bodyPr"
-    norm_tag   = A_NS + "normAutofit"
-    shape_tag  = A_NS + "spAutoFit"
-    no_tag     = A_NS + "noAutofit"
-    p_tag      = A_NS + "p"
-    pPr_tag    = A_NS + "pPr"
-    lnSpc_tag  = A_NS + "lnSpc"
-    spcPct_tag = A_NS + "spcPct"
-
-    # 1) Per text frame: set autofit and tighten insets if requested
-    for bp in list(root.iter(bodyPr_tag)):
-        # remove conflicting children
-        for ch in list(bp):
-            if ch.tag in (norm_tag, shape_tag, no_tag):
-                bp.remove(ch)
-        if mode == "none":
-            bp.append(ET.Element(no_tag))
-        elif mode == "shape":
-            bp.append(ET.Element(shape_tag))
-        else:
-            na = ET.Element(norm_tag)
-            # allow PowerPoint to shrink fonts and line spacing to fit
-            na.set("fontScale", str(font_scale_min))           # e.g., 90000 = 90%
-            na.set("lnSpcReduction", "12000")                  # ~12% line-space reduction headroom
-            bp.append(na)
-        if tight_margins:
-            # Insets: values are EMUs; these are conservative, non-zero margins
-            bp.set("lIns", "45720")   # ~0.05"
-            bp.set("rIns", "45720")
-            bp.set("tIns", "22860")   # ~0.025"
-            bp.set("bIns", "22860")
-
-    # 2) Normalize line spacing to a fixed percentage (e.g., 100%)
-    for p in list(root.iter(p_tag)):
-        pPr = p.find(pPr_tag)
-        if pPr is None:
-            pPr = ET.SubElement(p, pPr_tag)
-        ln = pPr.find(lnSpc_tag)
-        if ln is None:
-            ln = ET.SubElement(pPr, lnSpc_tag)
-        sp = ln.find(spcPct_tag)
-        if sp is None:
-            sp = ET.SubElement(ln, spcPct_tag)
-        sp.set("val", str(line_spacing_pct))
-
-def _use_responses_api(model: str) -> bool:
-    m = (model or "").lower()
-    # Prefer Responses API for latest models like gpt-5 family
-    return m.startswith("gpt-5") or os.getenv("OPENAI_USE_RESPONSES") == "1"
-
-def make_array_schema(expected_len: int | None):
-    """Build a strict JSON Schema for string arrays."""
-    return {
-        "name": "BatchArrayOfStrings",
-        "schema": {
-            "type": "array",
-            "items": {"type": "string"},
-            "minItems": 1
-        },
-        "strict": True
-    }
-
-def _responses_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    # OpenAI Responses API with GPT-5 reasoning model
-    try:
-        # Configure reasoning effort based on model - high for main translation, minimal for reviews
-        if model.startswith("gpt-5-mini"):
-            effort = "minimal"  # Fast reviewer
-        else:
-            effort = os.getenv("OPENAI_REASONING_EFFORT", "high")  # Deep thinking for translation
-        
-        resp = client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": [{"type": "input_text", "text": sys_prompt}]},
-                {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}]}
-            ],
-            reasoning={"effort": effort},
-            text={"verbosity": "low"},  # Concise responses, avoid chatty prose
-            temperature=temperature,
-            response_format={"type": "json"},
-        )
-        # New SDKs expose output_text; fall back if absent
-        content = getattr(resp, "output_text", None)
-        if not content:
-            # Fallback to choices/message style if present
-            if getattr(resp, "choices", None):
-                content = resp.choices[0].message.content
-        if not content and getattr(resp, "output", None):
-            try:
-                # Attempt to read the first text content
-                content = resp.output[0].content[0].text
-            except Exception:
-                content = None
-        return content.strip() if content else ""
-    except Exception:
-        raise
-
-def _chat_create(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    """Sync version with response_format fallback."""
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            temperature=temperature,
-            response_format={"type": "json_object"},
-        )
-    except Exception:
-        # Fallback: schema in prompt
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": sys_prompt + "\nReturn ONLY a JSON array."},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            temperature=temperature,
-        )
-    return resp.choices[0].message.content.strip()
-
-async def _chat_create_async(client, model: str, sys_prompt: str, user_payload: dict, temperature: float):
-    """Async version with response_format fallback."""
-    try:
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            temperature=temperature,
-            response_format={"type": "json_object"},
-        )
-    except Exception:
-        # Fallback: schema in prompt
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": sys_prompt + "\nReturn ONLY a JSON array."},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            temperature=temperature,
-        )
-    return resp.choices[0].message.content.strip()
-
-async def _responses_create_compat_async(aclient, *, model, input, temperature, json_schema, max_output_tokens):
-    """Async Responses API wrapper with JSON schema fallback."""
-    try:
-        resp = await aclient.responses.create(
-            model=model,
-            input=input,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            response_format={"type": "json_schema", "json_schema": json_schema, "strict": True},
-        )
-    except TypeError as e:
-        if "response_format" in str(e):
-            # Fallback: inline schema in prompt
-            schema_text = f"Return ONLY a valid JSON value matching this JSON Schema:\n{json.dumps(json_schema, indent=2)}"
-            fallback_input = input.copy()
-            if fallback_input and len(fallback_input) > 0:
-                fallback_input[0]["content"] = schema_text + "\n\n" + fallback_input[0]["content"]
-            
-            resp = await aclient.responses.create(
-                model=model,
-                input=fallback_input,
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-            )
-        else:
-            raise
-    
-    # Extract content from response
-    content = getattr(resp, "output_text", None)
-    if not content and getattr(resp, "output", None):
-        try:
-            content = resp.output[0].content[0].text
-        except Exception:
-            content = None
-    if not content and getattr(resp, "choices", None):
-        content = resp.choices[0].message.content
-    
-    return content.strip() if content else ""
-
-def _extract_json_array(s: str, expected_len: int):
-    import json, re
-    s = re.sub(r"^```(?:json)?|```$", "", s.strip(), flags=re.M)
-    dec = json.JSONDecoder()
-    in_str = esc = False; i = 0; n = len(s)
-    while i < n:
-        ch = s[i]
-        if esc: esc = False
-        elif ch == '\\' and in_str: esc = True
-        elif ch == '"' and in_str: in_str = not in_str
-        elif not in_str and ch == '[':
-            try:
-                obj, end = dec.raw_decode(s, i)
-            except json.JSONDecodeError:
-                i += 1; continue
-            if isinstance(obj, list) and (expected_len == 0 or len(obj) >= expected_len):
-                return obj[:expected_len] if expected_len else obj
-            i = end; continue
-        i += 1
-    return None
 
 def build_style_guide_text(style_preset: str, style_file: str | None) -> str:
     """Return style guide text used in prompts."""
@@ -939,9 +559,8 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
     """
     if offline_mode:
         logging.info(f"Running in offline mode - using mock translations for {len(items)} items")
-        return mock_translate(items)
+        return mock_translate(items), {}, set()
     
-    global _slide_notes_content
     logging.debug(f"Starting batch translation of {len(items)} items with model {model}")
     # Apply masking to protect fragile content
     items_masked, maps = zip(*[mask_fragile(x) for x in items]) if items else ([], [])
@@ -981,7 +600,7 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
             continue
 
         # Try robust JSON parsing first
-        data = _extract_json_array(content, len(items))
+        data = extract_json_array(content, len(items))
         if data:
             # Unmask fragile content in results
             out = [unmask_fragile(str(y), maps[i]) for i, y in enumerate(data)]
@@ -990,6 +609,7 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
             if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
                 processed_out = []
                 notes_content = []
+                slides_need_tightening = set()
                 
                 for i, (original, translated) in enumerate(zip(items, out)):
                     expansion_ratio = calculate_expansion_ratio(original, translated)
@@ -1014,31 +634,31 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
                                 # Still might need tightening
                                 final_ratio = calculate_expansion_ratio(original, stub_text)
                                 if final_ratio > (threshold * 0.9):  # Still close to threshold
-                                    _slides_need_tightening.add(original)
+                                    slides_need_tightening.add(original)
                             else:
                                 # Integrity check failed, use condensed version without spill
                                 processed_out.append(condensed)
                                 notes_content.append("")
                                 # Definitely need tightening since spill failed
-                                _slides_need_tightening.add(original)
+                                slides_need_tightening.add(original)
                         else:
                             # Compression worked, check if still needs tightening
                             processed_out.append(condensed)
                             notes_content.append("")
                             if new_ratio > (threshold * 0.85):  # Still somewhat long
-                                _slides_need_tightening.add(original)
+                                slides_need_tightening.add(original)
                     else:
                         # Check if borderline case that could benefit from tightening
                         if expansion_ratio > (threshold * 0.8):  # Within 20% of threshold
-                            _slides_need_tightening.add(original)
+                            slides_need_tightening.add(original)
                         processed_out.append(translated)
                         notes_content.append("")
                 
-                # Store notes content globally for PPTX write-back
                 # Map original text to notes content for lookup during processing
+                slide_notes_content = {}
                 for original, notes in zip(items, notes_content):
                     if notes.strip():
-                        _slide_notes_content[original] = notes
+                        slide_notes_content[original] = notes
                 
                 # Load deck tone profile
                 deck_tone = None
@@ -1050,7 +670,7 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
                 # Apply style consistency workflow
                 final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, deck_tone, offline_mode)
                         
-                return final_out
+                return final_out, slide_notes_content, slides_need_tightening
             else:
                 # Load deck tone profile
                 deck_tone = None
@@ -1061,7 +681,7 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
 
                 # Apply style consistency to simple path too
                 final_out = apply_style_consistency_workflow(client, out, items, glossary, deck_tone, offline_mode)
-                return final_out
+                return final_out, {}, set()
             
         # Fallback to simple JSON parsing
         try:
@@ -1073,6 +693,7 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
                 if _use_responses_api(model) and os.getenv("ENABLE_EXPANSION_POLICY", "1") == "1":
                     processed_out = []
                     notes_content = []
+                    slides_need_tightening = set()
                     
                     for i, (original, translated) in enumerate(zip(items, out)):
                         expansion_ratio = calculate_expansion_ratio(original, translated)
@@ -1090,41 +711,42 @@ def batch_translate(client, model: str, items, glossary, offline_mode=False):
                                     notes_content.append(spilled_content)
                                     final_ratio = calculate_expansion_ratio(original, stub_text)
                                     if final_ratio > (threshold * 0.9):
-                                        _slides_need_tightening.add(original)
+                                        slides_need_tightening.add(original)
                                 else:
                                     processed_out.append(condensed)
                                     notes_content.append("")
-                                    _slides_need_tightening.add(original)
+                                    slides_need_tightening.add(original)
                             else:
                                 processed_out.append(condensed)
                                 notes_content.append("")
                                 if new_ratio > (threshold * 0.85):
-                                    _slides_need_tightening.add(original)
+                                    slides_need_tightening.add(original)
                         else:
                             if expansion_ratio > (threshold * 0.8):
-                                _slides_need_tightening.add(original)
+                                slides_need_tightening.add(original)
                             processed_out.append(translated)
                             notes_content.append("")
                     
-                    # Store notes content globally
+                    # Store notes content
+                    slide_notes_content = {}
                     for original, notes in zip(items, notes_content):
                         if notes.strip():
-                            _slide_notes_content[original] = notes
+                            slide_notes_content[original] = notes
                     
                     # Apply style consistency workflow
                     final_out = apply_style_consistency_workflow(client, processed_out, items, glossary, None, offline_mode)
                     
-                    return final_out
+                    return final_out, slide_notes_content, slides_need_tightening
                 else:
                     # Apply style consistency to fallback path
                     final_out = apply_style_consistency_workflow(client, out, items, glossary, None, offline_mode)
-                    return final_out
+                    return final_out, {}, set()
         except Exception:
             # Not valid JSON array; retry
             time.sleep(1 + attempt)
             continue
 
-    return items
+    return items, {}, set()
 
 async def translate_batch(items, attempt=1, args=None, client=None, model=None, glossary=None, idx=None, json_debug_dir=None):
     """Translate a single batch with retry and split logic."""
@@ -1435,6 +1057,8 @@ def main():
 
     # Main translation
     calls = 0  # Initialize calls counter
+    _slide_notes_content = {}
+    _slides_need_tightening = set()
     if missing:
         if args.concurrency > 1:
             # Async path
@@ -1459,7 +1083,9 @@ def main():
             i = 0
             while i < len(missing):
                 batch = missing[i:i+batch_size]
-                out = batch_translate(client, args.model, batch, glossary, args.offline)
+                out, slide_notes, slides_tighten = batch_translate(client, args.model, batch, glossary, args.offline)
+                _slide_notes_content.update(slide_notes)
+                _slides_need_tightening.update(slides_tighten)
                 calls += 1
                 for s, t in zip(batch, out):
                     cache[s] = t
