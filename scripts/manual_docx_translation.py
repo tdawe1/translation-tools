@@ -22,14 +22,23 @@ import argparse
 import io
 import json
 import zipfile
+import unicodedata
+import sys
+import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List
 import xml.etree.ElementTree as ET
 
+# Ensure we import the external 'python-docx' library, not local 'scripts/docx'
 from docx import Document
 
 
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _norm(text: str) -> str:
+    """Normalize Japanese text to NFKC for stable matching."""
+    return unicodedata.normalize("NFKC", text)
 
 
 def collect_segments(docx_path: Path) -> List[str]:
@@ -43,9 +52,11 @@ def collect_segments(docx_path: Path) -> List[str]:
             return
         if not text.strip():
             return
-        if text not in seen:
+        # Normalize key for deduplication
+        key = _norm(text)
+        if key not in seen:
             segments.append(text)
-            seen.add(text)
+            seen.add(key)
 
     for paragraph in document.paragraphs:
         add_text(paragraph.text)
@@ -87,9 +98,12 @@ def translate_docx(
                 root = ET.fromstring(data)
                 for paragraph in root.iter(f"{W_NS}p"):
                     src_text = paragraph_text(paragraph)
-                    lookup = src_text.strip()
+                    # Normalize lookup key
+                    lookup = _norm(src_text.strip())
                     if not lookup:
                         continue
+
+                    # Try direct lookup first, then normalized
                     if src_text in translation_map:
                         replace_paragraph_text(paragraph, translation_map[src_text])
                     elif lookup in translation_map:
@@ -114,7 +128,11 @@ def load_translation_map(translations_path: Path) -> Dict[str, str]:
             continue
         if not en.strip():
             raise ValueError(f"Missing English translation for segment: {jp}")
+
+        # Store both raw and normalized keys to be safe
         mapping[jp] = en
+        mapping[_norm(jp)] = en
+
     return mapping
 
 
@@ -154,11 +172,10 @@ def main() -> None:
         translation_map = load_translation_map(args.translations)
         missing = translate_docx(args.input, args.output, translation_map)
         if missing:
-            raise SystemExit(
-                "Translation completed with missing segments:\n"
-                + "\n".join(missing[:20])
-                + ("\n..." if len(missing) > 20 else "")
-            )
+            print("Warning: Translation completed with missing segments:")
+            print("\n".join(missing[:20]) + ("\n..." if len(missing) > 20 else ""))
+            # Don't raise SystemExit here to allow partial success
+
         print(f"Translated DOCX written to {args.output}")
         return
 

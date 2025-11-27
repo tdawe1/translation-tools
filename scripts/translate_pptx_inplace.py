@@ -76,6 +76,166 @@ except Exception:
     print("ERROR: The 'openai' package is required. Install via: pip install openai", file=sys.stderr)
     raise
 
+# ---- Google Gemini Client Adapter ----
+import requests
+
+class GeminiClient:
+    """Adapter for Google Gemini API to mimic OpenAI client interface."""
+    def __init__(self, api_key, model=None):
+        self.api_key = api_key
+        self.default_model = model
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
+        self.chat = self.Chat(self)
+        self.responses = self.Responses(self)
+
+    class Chat:
+        def __init__(self, client):
+            self.client = client
+            self.completions = self.Completions(client)
+
+        class Completions:
+            def __init__(self, client):
+                self.client = client
+
+            def create(self, model, messages, temperature=0.7, response_format=None, **kwargs):
+                model = model or self.client.default_model
+
+                # Convert messages to Gemini format
+                contents = []
+                system_instruction = None
+
+                for msg in messages:
+                    role = msg.get("role")
+                    content = msg.get("content")
+
+                    # Handle complex content (list of dicts) if necessary, though usually string here
+                    text_content = ""
+                    if isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict) and "text" in part:
+                                text_content += part["text"]
+                            elif isinstance(part, str):
+                                text_content += part
+                    else:
+                        text_content = str(content)
+
+                    if role == "system":
+                        system_instruction = {"parts": [{"text": text_content}]}
+                    elif role == "user":
+                        contents.append({"role": "user", "parts": [{"text": text_content}]})
+                    elif role == "assistant":
+                        contents.append({"role": "model", "parts": [{"text": text_content}]})
+
+                url = f"{self.client.base_url}/{model}:generateContent"
+
+                generation_config = {"temperature": temperature}
+                if response_format and response_format.get("type") == "json_object":
+                    generation_config["responseMimeType"] = "application/json"
+
+                payload = {
+                    "contents": contents,
+                    "generationConfig": generation_config
+                }
+
+                if system_instruction:
+                    payload["systemInstruction"] = system_instruction
+
+                headers = {"x-goog-api-key": self.client.api_key, "Content-Type": "application/json"}
+                logging.debug(f"Sending request to Gemini API: {url}")
+                try:
+                    response = requests.post(url, json=payload, headers=headers, timeout=60)
+                except requests.exceptions.Timeout as e:
+                    raise Exception("Gemini API request timed out after 60 seconds") from e
+                except requests.exceptions.RequestException as e:
+                    raise Exception(f"Gemini API request failed: {e}") from e
+
+                logging.debug(f"Received response from Gemini API: {response.status_code}")
+
+                if response.status_code != 200:
+                    raise Exception(f"Gemini API Error {response.status_code}: {response.text}")
+
+                data = response.json()
+                try:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                except (KeyError, IndexError):
+                    # Handle blocked response (safety settings) or empty
+                    if "promptFeedback" in data:
+                        logging.warning(f"Gemini Safety Feedback: {data['promptFeedback']}")
+                    text = ""
+
+                # Mock OpenAI response object
+                class Message:
+                    def __init__(self, content):
+                        self.content = content
+                class Choice:
+                    def __init__(self, message):
+                        self.message = message
+                class Response:
+                    def __init__(self, choices):
+                        self.choices = choices
+
+                return Response([Choice(Message(text))])
+
+    # Minimal support for responses API (just fallback to chat)
+    class Responses:
+        def __init__(self, client):
+            self.client = client
+        def create(self, model, input, temperature=0.7, response_format=None, **kwargs):
+            # Map input (list of messages) to chat.completions.create
+            # The responses API uses 'input' instead of 'messages'
+            # And returns a specific object, but our code checks .output_text or .choices
+
+            # We'll just proxy to chat.completions.create and wrap the result to look like a responses object
+            resp = self.client.chat.completions.create(
+                model=model,
+                messages=input,
+                temperature=temperature,
+                response_format=response_format
+            )
+
+            class ResponsesContent:
+                def __init__(self, text: str):
+                    self.text = text
+
+            class ResponsesOutput:
+                def __init__(self, text: str):
+                    self.content = [ResponsesContent(text)]
+
+            class ResponsesObject:
+                def __init__(self, content: str):
+                    self.output_text = content
+                    self.output = [ResponsesOutput(content)]
+
+            return ResponsesObject(resp.choices[0].message.content)
+
+def get_llm_client(model_name: str):
+    """Factory to return appropriate LLM client based on model name."""
+    if "gemini" in model_name.lower():
+        # Try Google-specific environment variables first
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+        if not api_key:
+            # Fallback: Try OPENAI_API_KEY but warn if it looks like an OpenAI key
+            openai_key = os.getenv("OPENAI_API_KEY", "")
+            if openai_key:
+                if openai_key.startswith("sk-"):
+                    logging.warning("Using OPENAI_API_KEY for Gemini model. This may fail if it is an actual OpenAI key.")
+                else:
+                    logging.info("Using OPENAI_API_KEY as Google API Key")
+                api_key = openai_key
+            else:
+                raise ValueError("No API key found. Please set GOOGLE_API_KEY or GEMINI_API_KEY.")
+
+        logging.info(f"Using Google Gemini Client for model: {model_name}")
+        return GeminiClient(api_key, model=model_name)
+    else:
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+        if not api_key:
+             # Allow missing key if we are just going to fail later or strict offline
+             pass
+        return OpenAI(api_key=api_key, base_url=base_url)
+
 # ---- Regex helpers ----
 JP_CORE = r'\u3040-\u309f\u30a0-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff'
 CJK_PUNCT = r'\u3000-\u303f'
@@ -628,19 +788,19 @@ def spill_to_notes(text_block: str, content_type: str = "bullet") -> tuple[str, 
             parts = re.split(r'\s*(?:,\s*(?:and|but|or)|;\s*)\s*', text_block)
             if len(parts) > 1:
                 stub_text = parts[0] + " (detail → Notes)"
-                spilled_content = f"Additional details: {" ".join(parts[1:])}"
+                spilled_content = f"Additional details: {' '.join(parts[1:])}"
                 return stub_text, spilled_content
             else:
                 # Last resort: split at halfway point on word boundary
                 words = text_block.split()
                 split_point = len(words) // 2
                 stub_text = " ".join(words[:split_point]) + " (more → Notes)"
-                spilled_content = f"Continued: {" ".join(words[split_point:])}"
+                spilled_content = f"Continued: {' '.join(words[split_point:])}"
                 return stub_text, spilled_content
         else:
             # Multiple sentences - keep first, spill rest
             stub_text = sentences[0] + " (detail → Notes)"
-            spilled_content = f"Additional details: {" ".join(sentences[1:])}"
+            spilled_content = f"Additional details: {' '.join(sentences[1:])}"
             return stub_text, spilled_content
     
     elif content_type == "table":
@@ -1329,9 +1489,9 @@ def main():
     ap.add_argument("--autofit-mode", choices=["norm","shape","none"], default="norm",
         help="norm = shrink text to fit shape; shape = expand shape to fit text; none = disable autofit")
     ap.add_argument("--font-scale-min", type=int, default=90000,
-        help="Minimum font scale (percent * 1000) for norm autofit; 90000 = 90%")
+        help="Minimum font scale (percent * 1000) for norm autofit; 90000 = 90%%")
     ap.add_argument("--line-spacing-pct", type=int, default=100000,
-        help="Paragraph line spacing percentage (100000 = 100%)")
+        help="Paragraph line spacing percentage (100000 = 100%%)")
     ap.add_argument("--tight-margins", action="store_true",
         help="Reduce text insets (left/right ≈0.5em, top/bottom ≈0.25em) to gain space")
     args = ap.parse_args()
@@ -1364,16 +1524,11 @@ def main():
         logging.info("Running in OFFLINE MODE - using mock translations")
         client = None  # No API client needed
     else:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            logging.error("OPENAI_API_KEY not set in environment")
+        try:
+            client = get_llm_client(args.model)
+        except ValueError as e:
+            logging.error(str(e))
             sys.exit(2)
-        
-        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
-        if base_url:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-        else:
-            client = OpenAI(api_key=api_key)
     
     logging.info(f"Starting translation: {args.inp} -> {args.outp}")
     logging.info(f"Model: {args.model}, Batch size: {args.batch}")
@@ -1410,7 +1565,7 @@ def main():
         print(f"Auto-batch: size={batch_size} (avg_len={avg_len:.1f})")
 
     # Warm pass
-    if args.warm_with and args.warm_with != args.model:
+    if not args.offline and args.warm_with and args.warm_with != args.model:
         uncached = [s for s in missing if s not in cache]
         if uncached:
             warm_batch = batch_size
@@ -1423,7 +1578,7 @@ def main():
                 json.dump(cache, f, ensure_ascii=False, indent=2)
 
     # Upgrade pass  
-    if args.upgrade_flagged:
+    if not args.offline and args.upgrade_flagged:
         flagged = get_flagged_items(cache)
         if flagged:
             updates = upgrade_pass(client, args.model, flagged, glossary, batch_size)
@@ -1437,6 +1592,19 @@ def main():
     calls = 0  # Initialize calls counter
     if missing:
         if args.concurrency > 1:
+            if args.offline:
+                logging.error("Concurrency > 1 is not supported in offline mode. Use --concurrency 1 with --offline.")
+                sys.exit(2)
+            if "gemini" in args.model.lower():
+                logging.error("Gemini models are not supported with --concurrency > 1. Use --concurrency 1 for Gemini models.")
+                sys.exit(2)
+
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
+            base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+            if not api_key:
+                logging.error("OPENAI_API_KEY is required for async translation with concurrency > 1.")
+                sys.exit(2)
+
             # Async path
             print(f"Async translation: {len(missing)} items, concurrency={args.concurrency}")
             if base_url:
