@@ -97,7 +97,9 @@ class PDFTranslationOrchestrator:
                  offline: bool = False,
                  cache_only: bool = False,
                  verbose: bool = False,
-                 concurrency: int = 1):
+                 concurrency: int = 1,
+                 do_audit: bool = True,
+                 do_csv: bool = True):
         """
         Initialize PDF translation orchestrator.
         
@@ -114,6 +116,8 @@ class PDFTranslationOrchestrator:
             cache_only: Use only cache, no API calls
             verbose: Enable verbose logging
             concurrency: Number of concurrent API requests
+            do_audit: Generate audit report after translation
+            do_csv: Generate bilingual CSV after translation
         """
         self.input_path = input_path
         self.output_path = output_path
@@ -127,6 +131,8 @@ class PDFTranslationOrchestrator:
         self.cache_only = cache_only
         self.verbose = verbose
         self.concurrency = concurrency
+        self.do_audit = do_audit
+        self.do_csv = do_csv
         
         # Initialize components
         self.extractor = PDFExtractor() if PDF_COMPONENTS_AVAILABLE else None
@@ -533,23 +539,26 @@ class PDFTranslationOrchestrator:
             
             logger.info(f"Back-projection completed: {self.output_path}")
             
-            # Step 7: Generate audit report
-            logger.info("Step 7: Generating audit report")
-            audit_report = self.auditor.generate_audit_report(self.output_path, self.input_path)
-            
-            # Save audit report
-            audit_json = self.output_path.replace('.pdf', '_audit.json')
-            try:
-                from audit_pdf import save_report_json
-                save_report_json(audit_report, audit_json)
-                logger.info(f"Audit report saved to: {audit_json}")
-            except ImportError:
-                logger.warning("Could not save audit report - audit_pdf functions not available")
-            
-            # Step 8: Generate bilingual CSV
-            logger.info("Step 8: Generating bilingual CSV")
-            bilingual_csv = self.output_path.replace('.pdf', '_bilingual.csv')
-            self._generate_bilingual_csv(extraction_result, translations, bilingual_csv)
+            if self.do_audit:
+                logger.info("Step 7: Generating audit report")
+                audit_report = self.auditor.generate_audit_report(self.output_path, self.input_path)
+
+                audit_json = self.output_path.replace('.pdf', '_audit.json')
+                try:
+                    from audit_pdf import save_report_json
+                    save_report_json(audit_report, audit_json)
+                    logger.info(f"Audit report saved to: {audit_json}")
+                except ImportError:
+                    logger.warning("Could not save audit report - audit_pdf functions not available")
+            else:
+                logger.info("Audit report generation skipped by flag")
+
+            if self.do_csv:
+                logger.info("Step 8: Generating bilingual CSV")
+                bilingual_csv = self.output_path.replace('.pdf', '_bilingual.csv')
+                self._generate_bilingual_csv(extraction_result, translations, bilingual_csv)
+            else:
+                logger.info("Bilingual CSV generation skipped by flag")
             
             self.stats['end_time'] = datetime.now()
             duration = (self.stats['end_time'] - self.stats['start_time']).total_seconds()
@@ -716,7 +725,9 @@ Environment:
             offline=args.offline,
             cache_only=args.cache_only,
             verbose=args.verbose,
-            concurrency=args.concurrency
+            concurrency=args.concurrency,
+            do_audit=not args.no_audit,
+            do_csv=not args.no_csv,
         )
         
         success = orchestrator.translate_pdf()
