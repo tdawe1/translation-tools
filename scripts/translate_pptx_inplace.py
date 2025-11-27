@@ -193,11 +193,19 @@ class GeminiClient:
                 response_format=response_format
             )
             
+            class ResponsesContent:
+                def __init__(self, text: str):
+                    self.text = text
+
+            class ResponsesOutput:
+                def __init__(self, text: str):
+                    self.content = [ResponsesContent(text)]
+
             class ResponsesObject:
-                def __init__(self, content):
+                def __init__(self, content: str):
                     self.output_text = content
-                    self.output = [type('Output', (), {'content': [type('Content', (), {'text': content})()]})()]
-                    
+                    self.output = [ResponsesOutput(content)]
+
             return ResponsesObject(resp.choices[0].message.content)
 
 def get_llm_client(model_name: str):
