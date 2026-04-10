@@ -90,6 +90,7 @@ class PDFTranslationOrchestrator:
                  output_path: str,
                  model: str = "gpt-4o-2024-08-06",
                  cache_file: str = "translation_cache.json",
+                 ignore_cache: bool = False,
                  glossary_file: Optional[str] = None,
                  batch_size: int = 10,
                  temperature: float = 0.6,
@@ -123,6 +124,7 @@ class PDFTranslationOrchestrator:
         self.output_path = output_path
         self.model = model
         self.cache_file = cache_file
+        self.ignore_cache = ignore_cache
         self.glossary_file = glossary_file
         self.batch_size = batch_size
         self.temperature = temperature
@@ -275,7 +277,7 @@ class PDFTranslationOrchestrator:
         translations = {}
         
         for text in text_list:
-            if text in self.cache:
+            if (not getattr(self, "ignore_cache", False)) and text in self.cache:
                 translations[text] = self.cache[text]
                 self.stats['cache_hits'] += 1
                 logger.debug(f"Cache hit: '{text[:50]}...'")
@@ -413,7 +415,7 @@ class PDFTranslationOrchestrator:
         return layout_blocks
     
     def _prepare_translations_for_backprojection(self, layout_blocks: List[TextBlock]) -> List[Dict[str, Any]]:
-        """Prepare translation data for back-projection."""
+        """Prepare translation data for back-projection (only extracted blocks)."""
         translations = []
         
         for block in layout_blocks:
@@ -631,6 +633,8 @@ Environment:
                        help='Optional glossary JSON file (format: {JA: EN})')
     parser.add_argument('--cache-only', action='store_true',
                        help='Use only cached translations, no API calls')
+    parser.add_argument('--ignore-cache', action='store_true',
+                       help='Ignore existing cache entries and re-translate all segments into the specified cache file')
     parser.add_argument('--offline', action='store_true',
                        help='Run in offline mode (no API calls)')
     
@@ -718,6 +722,7 @@ Environment:
             output_path=args.output_path,
             model=args.model,
             cache_file=args.cache,
+            ignore_cache=args.ignore_cache,
             glossary_file=args.glossary,
             batch_size=args.batch,
             temperature=args.temperature,

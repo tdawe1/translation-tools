@@ -98,7 +98,10 @@ class PDFBackProjector:
     """Main class for PDF text replacement and formatting preservation."""
     
     def __init__(self, input_path: str, output_path: str, translations_path: str,
-                 fuzzy_threshold: float = 0.85, token_threshold: float = 0.75):
+                 fuzzy_threshold: float = 0.85,
+                 token_threshold: float = 0.75,
+                 skip_table_body: bool = False,
+                 skip_numeric: bool = False):
         self.input_path = input_path
         self.output_path = output_path
         self.translations_path = translations_path
@@ -107,10 +110,13 @@ class PDFBackProjector:
         self.text_blocks = []
         self.fuzzy_threshold = fuzzy_threshold
         self.token_threshold = token_threshold
+        self.skip_table_body = skip_table_body
+        self.skip_numeric = skip_numeric
         self.replacement_stats = {
             'total_blocks': 0,
             'replaced_blocks': 0,
             'failed_blocks': 0,
+            'skipped_blocks': 0,
             'layout_adjustments': 0,
             'match_types': {
                 'exact': 0,
@@ -578,6 +584,116 @@ class PDFBackProjector:
         """Check if text is primarily Latin/ASCII."""
         return all(ord(c) < 128 for c in text.replace('\n', '').replace(' ', ''))
 
+    _TABLE_HEADER_JP = {
+        "日付",
+        "内容",
+        "出金金額",
+        "入金金額",
+        "残高",
+    }
+
+    def _choose_alignment(self, text_block: TextBlock, translated_text: str) -> int:
+        """Choose textbox alignment that matches statement table conventions."""
+        if text_block.text in self._TABLE_HEADER_JP:
+            return fitz.TEXT_ALIGN_CENTER
+
+        text = (translated_text or "").strip()
+        if re.fullmatch(r"\d{1,2}/\d{1,2}", text):
+            return fitz.TEXT_ALIGN_LEFT
+
+        # Numbers: right align inside amount/balance columns.
+        if re.fullmatch(r"[0-9][0-9, ]*", text):
+            return fitz.TEXT_ALIGN_RIGHT
+        if re.fullmatch(r"[0-9][0-9, ]*\.[0-9]+", text):
+            return fitz.TEXT_ALIGN_RIGHT
+
+        return fitz.TEXT_ALIGN_LEFT
+
+    def _is_table_body_block(self, text_block: TextBlock) -> bool:
+        """Heuristic: detect statement table body rows (not headers)."""
+        y0 = text_block.bbox[1]
+        y1 = text_block.bbox[3]
+        if text_block.text in self._TABLE_HEADER_JP and 240 <= y0 <= 280:
+            return False
+        # For this statement template, row content begins below the header band.
+        return y1 >= 280 and y0 >= 260
+
+    def _looks_numeric_or_date(self, text: str) -> bool:
+        """True if the translated text is numeric/date-like (digits, amounts, etc.)."""
+        if not text:
+            return False
+        t = text.strip()
+        if re.fullmatch(r"\d{1,2}/\d{1,2}", t):
+            return True
+        if re.fullmatch(r"[0-9][0-9, ]*", t):
+            return True
+        if re.fullmatch(r"[0-9][0-9, ]*\.[0-9]+", t):
+            return True
+        return bool(re.search(r"\d", t))
+
+    def _prioritized_font_paths(self, text_block: TextBlock, translated_text: str) -> List[str]:
+        """Return font candidates with stable embedded fonts prioritized."""
+        candidates = self._font_candidates(text_block)
+
+        if not translated_text:
+            return candidates
+
+        # Prefer an embedded Latin font for pure ASCII to avoid viewer-dependent base14 substitution.
+        if self._is_latin_text(translated_text):
+            name = (text_block.font_name or "").lower()
+            prefer_serif = any(token in name for token in ["mincho", "serif"])
+
+            ordered: List[str] = []
+
+            def add(path: Optional[str]) -> None:
+                if path and path not in ordered:
+                    ordered.append(path)
+
+            if prefer_serif:
+                add(self.font_paths.get("serif_cjk_bold" if text_block.is_bold else "serif_cjk_regular"))
+            add(self.font_paths.get("latin_sans_bold" if text_block.is_bold else "latin_sans_regular"))
+            add(self.font_paths.get("sans_cjk_bold" if text_block.is_bold else "sans_cjk_regular"))
+            add(self.font_paths.get("helvetica_neue_bold" if text_block.is_bold else "helvetica_neue_regular"))
+
+            for path in candidates:
+                add(path)
+
+            return ordered
+
+        return candidates
+
+    def _fit_font_size(
+        self,
+        font_obj: fitz.Font,
+        text: str,
+        rect: fitz.Rect,
+        font_size: float,
+    ) -> float:
+        """Shrink font size to fit within the rect for single-line table-like text."""
+        if not text:
+            return font_size
+
+        width = max(1.0, rect.width)
+        height = max(1.0, rect.height)
+
+        lines = text.splitlines() or [text]
+        # Small fudge factor for side bearings and rounding differences between renderers.
+        needed_w = max(font_obj.text_length(line, font_size) for line in lines) * 1.03
+        needed_h = max(1, len(lines)) * (font_size * 1.2)
+
+        scale = 1.0
+        if needed_w > width:
+            scale = min(scale, (width / needed_w) * 0.98)
+        if needed_h > height:
+            scale = min(scale, (height / needed_h) * 0.98)
+
+        if scale >= 1.0:
+            return font_size
+
+        # Clamp to a readable minimum. Table headers can be quite tight.
+        min_size = max(4.0, font_size * 0.55)
+        return max(min_size, font_size * scale)
+
     def replace_text_in_block(self, page, text_block: TextBlock, 
                             translation: TranslationData) -> bool:
         """Replace text in a specific text block."""
@@ -616,10 +732,8 @@ class PDFBackProjector:
 
             # Force a stable, full-coverage font: prefer original family if installed,
             # then fall back to Noto CJK/Latin.
-            font_paths = self._font_candidates(text_block)
-            
-            # Force Helvetica for pure Latin text to avoid CJK font issues
-            is_latin = self._is_latin_text(translated_text)
+            font_paths = self._prioritized_font_paths(text_block, translated_text)
+            align = self._choose_alignment(text_block, translated_text)
             
             def pick_builtin(base: str, bold: bool, italic: bool) -> str:
                 if base == "times":
@@ -671,56 +785,59 @@ class PDFBackProjector:
             chosen_font_name = None
             # Try with font files first (embed Noto CJK / Latin if available)
             chosen_font_path = None
-            
-            # If text is Latin, prioritize built-in Helvetica/Times for reliability
-            if is_latin:
+
+            did_skip = False
+            if self.skip_table_body and self._is_table_body_block(text_block):
+                did_skip = True
+            if not did_skip and self.skip_numeric and self._looks_numeric_or_date(translated_text):
+                did_skip = True
+            if did_skip:
+                self.replacement_stats['skipped_blocks'] += 1
+                self.replacement_stats['replaced_blocks'] += 1
+                return True
+
+            for path in font_paths:
+                if not path:
+                    continue
+                font_obj = self._get_font(path)
+                if not font_obj:
+                    continue
                 try:
+                    fitted_size = self._fit_font_size(font_obj, translated_text, rect, new_font_size)
                     page.insert_textbox(
                         rect,
                         translated_text,
-                        fontname=builtin_font,
-                        fontsize=new_font_size,
+                        fontfile=path,
+                        fontsize=fitted_size,
                         color=color,
                         rotate=text_block.rotation,
-                        align=fitz.TEXT_ALIGN_LEFT,
+                        align=align,
                     )
                     inserted = True
-                    chosen_font_name = builtin_font
+                    chosen_font_path = path
+                    break
                 except Exception as e:
                     last_err = e
-            
-            if not inserted:
-                for path in font_paths:
-                    if not path:
-                        continue
-                    try:
-                        page.insert_textbox(
-                            rect,
-                            translated_text,
-                            fontfile=path,
-                            fontsize=new_font_size,
-                            color=color,
-                            rotate=text_block.rotation,
-                            align=fitz.TEXT_ALIGN_LEFT,
-                        )
-                        inserted = True
-                        chosen_font_path = path
-                        break
-                    except Exception as e:
-                        last_err = e
-                        continue
+                    continue
 
             # Fallback to built-in font if not already tried or failed
             if not inserted:
                 try:
+                    try:
+                        fallback_font_obj = fitz.Font(fontname=builtin_font)
+                        fitted_size = self._fit_font_size(
+                            fallback_font_obj, translated_text, rect, new_font_size
+                        )
+                    except Exception:
+                        fitted_size = new_font_size
                     page.insert_textbox(
                         rect,
                         translated_text,
                         fontname=builtin_font,
-                        fontsize=new_font_size,
+                        fontsize=fitted_size,
                         color=color,
                         rotate=text_block.rotation,
-                        align=fitz.TEXT_ALIGN_LEFT,
+                        align=align,
                     )
                     inserted = True
                     chosen_font_name = builtin_font
@@ -989,6 +1106,10 @@ Translation JSON format:
                        help='Token matching threshold (0.0-1.0, default: 0.75)')
     parser.add_argument('--debug-matching', action='store_true',
                        help='Enable detailed matching debug output')
+    parser.add_argument('--skip-table-body', action='store_true',
+                       help='Do not replace text in statement table body rows')
+    parser.add_argument('--skip-numeric', action='store_true',
+                       help='Do not apply translations whose output contains digits')
     
     args = parser.parse_args()
     
@@ -1031,7 +1152,9 @@ Translation JSON format:
             args.output, 
             args.translations,
             fuzzy_threshold=args.fuzzy_threshold,
-            token_threshold=args.token_threshold
+            token_threshold=args.token_threshold,
+            skip_table_body=args.skip_table_body,
+            skip_numeric=args.skip_numeric,
         )
         projector.process_document()
         
