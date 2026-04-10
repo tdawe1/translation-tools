@@ -19,6 +19,7 @@ bilingual*.csv
 residual_rows_translated_only.csv
 
 # Artifacts
+artifacts/
 outputs/*.pptx
 run-artifacts/
 archived_runs/

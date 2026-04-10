@@ -25,10 +25,9 @@
 
 - Online vs Offline
   - Online: Uses OpenAI client (Responses/Chat) with JSON array contract; retries + batch splitting.
-  - Offline: `--offline` mode returns mock translations; or use manual templates + `apply_cache_only.py`/DOCX apply.
+  - Offline: `--offline` mode returns mock translations; or use manual templates + `apply_cache_only.py`/DOCX apply. Offline/manual is recommended for Codex CLI sessions and local development; API usage is optional and only needed when explicitly running online.
 
 - Safety & Layout
   - Masking of URLs/numbers/codes; unmask after.
   - PPTX XML: `<a:normAutofit>`, body insets, line spacing normalization.
   - Optional "spill to notes" policy when expansion exceeds thresholds (online mode).
-
